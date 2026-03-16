@@ -24,6 +24,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def _add_file_handler(log_dir: Path) -> None:
+    """将日志同时写入文件，避免重复添加 handler。"""
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "grpo_training.log"
+    if not any(
+        isinstance(h, logging.FileHandler)
+        and getattr(h, "baseFilename", None) == str(log_file.resolve())
+        for h in logger.handlers
+    ):
+        fh = logging.FileHandler(log_file, encoding="utf-8")
+        fh.setLevel(logging.INFO)
+        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        logger.addHandler(fh)
+        logger.info(f"日志文件: {log_file}")
+
+
 # ============================================================
 # 路径配置
 # ============================================================
@@ -287,6 +304,7 @@ def run_grpo_training():
     4. 启动训练
     5. 保存模型
     """
+    _add_file_handler(GRPO_LOG_DIR)
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
     from trl import GRPOTrainer, GRPOConfig
@@ -346,7 +364,7 @@ def run_grpo_training():
         max_steps=GRPO_CONFIG["max_steps"],
         seed=GRPO_CONFIG["seed"],
         bf16=True,
-        report_to="tensorboard",
+        report_to=["tensorboard", "wandb"],
         remove_unused_columns=False,  # 保留 reference_answer 列用于奖励计算
     )
 

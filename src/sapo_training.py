@@ -25,6 +25,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _add_file_handler(log_dir: Path) -> None:
+    """将日志同时写入文件，避免重复添加 handler。"""
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "sapo_training.log"
+    if not any(
+        isinstance(h, logging.FileHandler)
+        and getattr(h, "baseFilename", None) == str(log_file.resolve())
+        for h in logger.handlers
+    ):
+        fh = logging.FileHandler(log_file, encoding="utf-8")
+        fh.setLevel(logging.INFO)
+        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        logger.addHandler(fh)
+        logger.info(f"日志文件: {log_file}")
+
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_RL = PROJECT_ROOT / "data" / "rl_prompts"
 SFT_MODEL_DIR = PROJECT_ROOT / "outputs" / "sft_model"
@@ -201,6 +217,7 @@ class SAPOMetricsCallback:
 
 
 def run_sapo_training():
+    _add_file_handler(SAPO_LOG_DIR)
     import torch
     from peft import PeftModel
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -343,7 +360,7 @@ def run_sapo_training():
         max_steps=SAPO_CONFIG["max_steps"],
         seed=SAPO_CONFIG["seed"],
         bf16=True,
-        report_to="tensorboard",
+        report_to=["tensorboard", "wandb"],
         remove_unused_columns=False,
     )
 
