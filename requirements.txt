@@ -1,0 +1,38 @@
+# AIMS5740 Final Project - Dependencies
+# ============================================
+# 深度学习框架
+torch>=2.1.0
+torchvision>=0.16.0
+
+# Hugging Face 生态
+transformers>=4.44.0
+datasets>=2.19.0
+accelerate>=0.30.0
+peft>=0.11.0
+trl>=0.9.0
+
+# LLaMA-Factory (通过 git clone 安装，此处仅作记录)
+# git clone https://github.com/hiyouga/LLaMA-Factory.git
+# cd LLaMA-Factory && pip install -e ".[torch,metrics]"
+
+# 评估框架
+# lm-eval>=0.4.0  # 可选：通过 pip install lm-eval 安装
+
+# 数据处理
+pandas>=2.0.0
+numpy>=1.24.0
+
+# 可视化
+matplotlib>=3.7.0
+
+# 工具
+sentencepiece>=0.1.99
+protobuf>=3.20.0
+safetensors>=0.4.0
+
+# 日志与监控
+tensorboard>=2.14.0
+
+# 其他
+tqdm>=4.65.0
+scipy>=1.10.0

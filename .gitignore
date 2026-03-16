@@ -1,0 +1,23 @@
+# 数据目录（运行时生成）
+data/
+# 输出目录（运行时生成）
+outputs/
+# LLaMA-Factory 框架
+LLaMA-Factory/
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+# 系统文件
+.DS_Store
+Thumbs.db
+# IDE
+.vscode/
+.idea/
+# 环境
+.env
+*.egg-info/
+# 日志
+*.log
+# 临时文件
+*.tmp
