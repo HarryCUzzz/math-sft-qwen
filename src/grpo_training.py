@@ -10,13 +10,12 @@ Stage C - GRPO 强化学习 (Group Relative Policy Optimization)
 参考: https://huggingface.co/learn/cookbook/en/fine_tuning_llm_grpo_trl
 """
 
-import os
-import re
 import json
 import logging
-import torch
+import re
 from pathlib import Path
-from dataclasses import dataclass
+
+import torch
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,20 +53,20 @@ GRPO_LOG_DIR = PROJECT_ROOT / "outputs" / "grpo_logs"
 # GRPO 训练超参数
 # ============================================================
 GRPO_CONFIG = {
-    "model_name": "Qwen/Qwen2.5-0.5B",       # 基座模型（SFT 模型基于此）
-    "sft_adapter_path": str(SFT_MODEL_DIR),     # SFT LoRA adapter 路径
-    "learning_rate": 5e-7,                       # GRPO 学习率（较 SFT 更低）
+    "model_name": "Qwen/Qwen2.5-0.5B",  # 基座模型（SFT 模型基于此）
+    "sft_adapter_path": str(SFT_MODEL_DIR),  # SFT LoRA adapter 路径
+    "learning_rate": 5e-7,  # GRPO 学习率（较 SFT 更低）
     "num_train_epochs": 1,
     "per_device_train_batch_size": 2,
     "gradient_accumulation_steps": 4,
-    "num_generations": 8,                        # 每个 prompt 生成 8 个答案（Group size）
-    "max_prompt_length": 512,                    # prompt 最大长度
-    "max_completion_length": 1024,               # 生成的最大长度
-    "beta": 0.04,                                # KL 散度惩罚系数
-    "temperature": 0.7,                          # 生成温度
+    "num_generations": 8,  # 每个 prompt 生成 8 个答案（Group size）
+    "max_prompt_length": 512,  # prompt 最大长度
+    "max_completion_length": 1024,  # 生成的最大长度
+    "beta": 0.04,  # KL 散度惩罚系数
+    "temperature": 0.7,  # 生成温度
     "logging_steps": 5,
     "save_steps": 100,
-    "max_steps": 500,                            # 最大训练步数
+    "max_steps": 500,  # 最大训练步数
     "seed": 42,
 }
 
@@ -84,7 +83,7 @@ def extract_boxed_answer(text):
     if not text:
         return None
 
-    pattern = r'\\boxed\{'
+    pattern = r"\\boxed\{"
     matches = list(re.finditer(pattern, text))
     if not matches:
         return None
@@ -95,14 +94,14 @@ def extract_boxed_answer(text):
     depth = 1
     i = start
     while i < len(text) and depth > 0:
-        if text[i] == '{':
+        if text[i] == "{":
             depth += 1
-        elif text[i] == '}':
+        elif text[i] == "}":
             depth -= 1
         i += 1
 
     if depth == 0:
-        return text[start:i-1].strip()
+        return text[start : i - 1].strip()
     return None
 
 
@@ -180,13 +179,18 @@ def format_reward_fn(completions, **kwargs):
         reward = 0.0
 
         # 部分 1: 是否包含 \\boxed{} 格式（0.5 分）
-        if r'\boxed{' in completion:
+        if r"\boxed{" in completion:
             reward += 0.5
 
         # 部分 2: 是否包含逐步推理过程（0.3 分）
         # 检查是否有 "Step" 关键词或多行推理（至少 3 行非空内容）
-        has_step_keyword = bool(re.search(r'(?i)(step\s*\d|first|then|next|therefore|thus|hence|so,|finally)', completion))
-        lines = [l.strip() for l in completion.split('\n') if l.strip()]
+        has_step_keyword = bool(
+            re.search(
+                r"(?i)(step\s*\d|first|then|next|therefore|thus|hence|so,|finally)",
+                completion,
+            )
+        )
+        lines = [l.strip() for l in completion.split("\n") if l.strip()]
         has_multi_line = len(lines) >= 3
 
         if has_step_keyword or has_multi_line:
@@ -248,17 +252,22 @@ def prepare_dataset_for_grpo(raw_data, tokenizer, max_samples=None):
     for item in raw_data:
         # 构建对话格式的 prompt
         messages = [
-            {"role": "system", "content": "You are a helpful math assistant. Solve problems step by step and put your final answer in \\boxed{}."},
+            {
+                "role": "system",
+                "content": "You are a helpful math assistant. Solve problems step by step and put your final answer in \\boxed{}.",
+            },
             {"role": "user", "content": item["prompt"]},
         ]
         # 使用 tokenizer 的 chat template 格式化 prompt
         formatted_prompt = tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-        processed.append({
-            "prompt": formatted_prompt,
-            "reference_answer": item["reference_answer"],
-        })
+        processed.append(
+            {
+                "prompt": formatted_prompt,
+                "reference_answer": item["reference_answer"],
+            }
+        )
 
     dataset = Dataset.from_list(processed)
     logger.info(f"GRPO 数据集准备完成: {len(dataset)} 条")
@@ -305,9 +314,9 @@ def run_grpo_training():
     5. 保存模型
     """
     _add_file_handler(GRPO_LOG_DIR)
-    from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
-    from trl import GRPOTrainer, GRPOConfig
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from trl import GRPOConfig, GRPOTrainer
 
     # ---- 步骤 1: 加载分词器 ----
     logger.info(f"加载分词器: {GRPO_CONFIG['model_name']}")
@@ -330,14 +339,19 @@ def run_grpo_training():
 
     # 如果 SFT adapter 存在，加载 LoRA adapter
     sft_adapter_path = Path(GRPO_CONFIG["sft_adapter_path"])
-    if sft_adapter_path.exists() and (sft_adapter_path / "adapter_config.json").exists():
+    if (
+        sft_adapter_path.exists()
+        and (sft_adapter_path / "adapter_config.json").exists()
+    ):
         logger.info(f"加载 SFT LoRA adapter: {sft_adapter_path}")
         model = PeftModel.from_pretrained(base_model, str(sft_adapter_path))
         # 合并 LoRA 权重到基座模型（GRPO 需要完整模型）
         model = model.merge_and_unload()
         logger.info("LoRA adapter 已合并到基座模型")
     else:
-        logger.warning(f"SFT adapter 未找到: {sft_adapter_path}, 将直接在基座模型上进行 GRPO")
+        logger.warning(
+            f"SFT adapter 未找到: {sft_adapter_path}, 将直接在基座模型上进行 GRPO"
+        )
         model = base_model
 
     # ---- 步骤 3: 准备数据集 ----
@@ -408,11 +422,14 @@ def run_grpo_training():
 # ============================================================
 def main():
     import argparse
+
     parser = argparse.ArgumentParser(description="Stage C: GRPO 强化学习训练")
-    parser.add_argument("--max_steps", type=int, default=None,
-                        help="覆盖默认的最大训练步数")
-    parser.add_argument("--num_generations", type=int, default=None,
-                        help="覆盖默认的 group size")
+    parser.add_argument(
+        "--max_steps", type=int, default=None, help="覆盖默认的最大训练步数"
+    )
+    parser.add_argument(
+        "--num_generations", type=int, default=None, help="覆盖默认的 group size"
+    )
     args = parser.parse_args()
 
     # 允许通过命令行覆盖默认配置

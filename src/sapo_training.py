@@ -17,7 +17,6 @@ import logging
 import re
 from pathlib import Path
 
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -109,7 +108,9 @@ def correctness_reward_fn(completions, reference_answer, **kwargs):
     rewards = []
     for completion, ref_answer in zip(completions, reference_answer):
         predicted = extract_boxed_answer(completion)
-        rewards.append(1.0 if predicted and answers_match(predicted, ref_answer) else 0.0)
+        rewards.append(
+            1.0 if predicted and answers_match(predicted, ref_answer) else 0.0
+        )
     return rewards
 
 
@@ -220,8 +221,7 @@ def run_sapo_training():
     _add_file_handler(SAPO_LOG_DIR)
     import torch
     from peft import PeftModel
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    from transformers import TrainerCallback
+    from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
     from trl import GRPOConfig, GRPOTrainer
 
     class SAPOTrainer(GRPOTrainer):
@@ -235,7 +235,9 @@ def run_sapo_training():
             self.tau_pos = tau_pos
             self.tau_neg = tau_neg
 
-        def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        def compute_loss(
+            self, model, inputs, return_outputs=False, num_items_in_batch=None
+        ):
             if return_outputs:
                 raise ValueError("return_outputs=True is not supported in SAPOTrainer.")
 
@@ -279,10 +281,9 @@ def run_sapo_training():
                         per_token_logps.detach() - ref_per_token_logps,
                         min=0,
                     )
-                    kl_penalty = (
-                        (per_token_kl * completion_mask).sum(dim=1)
-                        / completion_mask.sum(dim=1).clamp_min(1)
-                    )
+                    kl_penalty = (per_token_kl * completion_mask).sum(
+                        dim=1
+                    ) / completion_mask.sum(dim=1).clamp_min(1)
                     loss = loss + self.beta * kl_penalty.mean()
 
             with torch.no_grad():
@@ -330,7 +331,10 @@ def run_sapo_training():
     )
 
     sft_adapter_path = Path(SAPO_CONFIG["sft_adapter_path"])
-    if sft_adapter_path.exists() and (sft_adapter_path / "adapter_config.json").exists():
+    if (
+        sft_adapter_path.exists()
+        and (sft_adapter_path / "adapter_config.json").exists()
+    ):
         logger.info("Loading SFT adapter: %s", sft_adapter_path)
         model = PeftModel.from_pretrained(base_model, str(sft_adapter_path))
         model = model.merge_and_unload()
@@ -402,16 +406,24 @@ def run_sapo_training():
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="Stage C+: SAPO reinforcement learning")
-    parser.add_argument("--max_steps", type=int, default=None, help="Override max training steps.")
+    parser = argparse.ArgumentParser(
+        description="Stage C+: SAPO reinforcement learning"
+    )
+    parser.add_argument(
+        "--max_steps", type=int, default=None, help="Override max training steps."
+    )
     parser.add_argument(
         "--num_generations",
         type=int,
         default=None,
         help="Override the number of sampled completions per prompt.",
     )
-    parser.add_argument("--tau_pos", type=float, default=None, help="Positive-advantage SAPO tau.")
-    parser.add_argument("--tau_neg", type=float, default=None, help="Negative-advantage SAPO tau.")
+    parser.add_argument(
+        "--tau_pos", type=float, default=None, help="Positive-advantage SAPO tau."
+    )
+    parser.add_argument(
+        "--tau_neg", type=float, default=None, help="Negative-advantage SAPO tau."
+    )
     args = parser.parse_args()
 
     if args.max_steps is not None:
