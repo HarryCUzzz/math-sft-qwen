@@ -389,7 +389,7 @@ def run_sft_with_transformers():
         save_total_limit=CONFIG["save_total_limit"],
         eval_strategy="steps",
         eval_steps=CONFIG["eval_steps"],
-        report_to=["tensorboard", "wandb"],
+        report_to=["tensorboard", "swanlab"],
         run_name="sft_qwen2.5_0.5b",
         seed=CONFIG["seed"],
         remove_unused_columns=False,

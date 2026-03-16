@@ -360,7 +360,7 @@ def run_sapo_training():
         max_steps=SAPO_CONFIG["max_steps"],
         seed=SAPO_CONFIG["seed"],
         bf16=True,
-        report_to=["tensorboard", "wandb"],
+        report_to=["tensorboard", "swanlab"],
         remove_unused_columns=False,
     )
 

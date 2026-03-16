@@ -364,7 +364,7 @@ def run_grpo_training():
         max_steps=GRPO_CONFIG["max_steps"],
         seed=GRPO_CONFIG["seed"],
         bf16=True,
-        report_to=["tensorboard", "wandb"],
+        report_to=["tensorboard", "swanlab"],
         remove_unused_columns=False,  # 保留 reference_answer 列用于奖励计算
     )
 
