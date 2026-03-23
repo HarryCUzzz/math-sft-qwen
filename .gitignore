@@ -1,7 +1,7 @@
 # 数据目录（运行时生成）
-data/
+#data/
 # 输出目录（运行时生成）
-outputs/
+#outputs/
 # LLaMA-Factory 框架
 LLaMA-Factory/
 # Python 缓存
@@ -18,6 +18,6 @@ Thumbs.db
 .env
 *.egg-info/
 # 日志
-*.log
+#*.log
 # 临时文件
 *.tmp
