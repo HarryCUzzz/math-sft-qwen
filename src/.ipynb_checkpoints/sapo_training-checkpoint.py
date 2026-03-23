@@ -14,7 +14,6 @@ Design goals:
 
 import json
 import logging
-import os
 import re
 from pathlib import Path
 
@@ -49,9 +48,7 @@ SAPO_LOG_DIR = PROJECT_ROOT / "outputs" / "sapo_logs"
 
 
 SAPO_CONFIG = {
-    "model_name": os.environ.get(
-        "BASE_MODEL_PATH", "/home/lyl/models/Qwen/Qwen2___5-0___5B"
-    ),
+    "model_name": "Qwen/Qwen2.5-0.5B",
     "sft_adapter_path": str(SFT_MODEL_DIR),
     "learning_rate": 5e-7,
     "num_train_epochs": 1,
@@ -238,41 +235,6 @@ def run_sapo_training():
             self.tau_pos = tau_pos
             self.tau_neg = tau_neg
 
-        def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
-            """
-            计算每个 token 的 log 概率。
-            参数:
-                model: 语言模型
-                input_ids: 输入 token IDs [batch_size, seq_len]
-                attention_mask: attention mask [batch_size, seq_len]
-                logits_to_keep: 需要保留的 logits 数量（completion 的长度）
-            返回:
-                per_token_logps: 每个 token 的 log 概率 [batch_size, logits_to_keep]
-            """
-            # 始终需要梯度（在 compute_loss 中调用）
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-            logits = outputs.logits
-
-            # 只保留 completion 部分的 logits
-            # logits shape: [batch_size, seq_len, vocab_size]
-            # 我们需要 [batch_size, logits_to_keep, vocab_size]
-            completion_logits = logits[:, -logits_to_keep - 1 : -1, :]
-
-            # 获取实际的 completion token IDs
-            completion_ids = input_ids[:, -logits_to_keep:]
-
-            # 计算 log softmax
-            log_probs = torch.nn.functional.log_softmax(completion_logits, dim=-1)
-
-            # 收集每个位置实际 token 的 log 概率
-            # log_probs shape: [batch_size, logits_to_keep, vocab_size]
-            # completion_ids shape: [batch_size, logits_to_keep]
-            per_token_logps = torch.gather(
-                log_probs, dim=2, index=completion_ids.unsqueeze(-1)
-            ).squeeze(-1)
-
-            return per_token_logps
-
         def compute_loss(
             self, model, inputs, return_outputs=False, num_items_in_batch=None
         ):
@@ -288,7 +250,6 @@ def run_sapo_training():
             attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
             logits_to_keep = completion_ids.shape[1]
 
-            # 计算当前策略的 per-token log probs
             per_token_logps = self._get_per_token_logps(
                 model,
                 input_ids,
@@ -296,62 +257,18 @@ def run_sapo_training():
                 logits_to_keep,
             )
 
-            # 获取或计算 old_per_token_logps
-            if "old_per_token_logps" in inputs:
-                old_per_token_logps = inputs["old_per_token_logps"]
-            else:
-                # 如果不存在，使用 detached 的当前 logps（no gradient）
-                with torch.no_grad():
-                    old_per_token_logps = self._get_per_token_logps(
-                        model,
-                        input_ids,
-                        attention_mask,
-                        logits_to_keep,
-                    ).detach()
-
+            old_per_token_logps = inputs["old_per_token_logps"]
             ratio = torch.exp(per_token_logps - old_per_token_logps)
 
-            # 获取 advantages
-            if "advantages" in inputs:
-                advantages = inputs["advantages"]
-            elif "rewards" in inputs:
-                rewards = inputs["rewards"]
-                # 计算 advantages（reward - baseline）
-                if rewards.dim() == 1:
-                    # rewards: [batch_size * num_generations]
-                    batch_size = prompt_ids.shape[0]
-                    num_gens = rewards.shape[0] // batch_size
-                    rewards_reshaped = rewards.view(batch_size, num_gens)
-                    baseline = rewards_reshaped.mean(dim=1, keepdim=True)
-                    advantages_1d = (rewards_reshaped - baseline).view(-1)
-                    advantages = advantages_1d
-                else:
-                    advantages = rewards
-            else:
-                # 使用默认值
-                logger.warning("Neither 'advantages' nor 'rewards' found in inputs. Using default values.")
-                advantages = torch.ones(completion_ids.shape[0], device=completion_ids.device)
-
-            # 确保 advantages 的形状正确：扩展到 per-token
-            # advantages: [batch_size * num_generations] -> [batch_size * num_generations, completion_length]
-            if advantages.dim() == 1:
-                # 扩展到每个 token
-                advantages_per_token = advantages.unsqueeze(1).expand_as(completion_mask)
-            elif advantages.dim() == 2 and advantages.shape[1] != completion_mask.shape[1]:
-                # 如果第二维不匹配，扩展
-                advantages_per_token = advantages.unsqueeze(-1).expand_as(completion_mask)
-            else:
-                advantages_per_token = advantages
-
-            # 现在 advantages_per_token 和 ratio 应该有相同的形状
+            advantages = inputs["advantages"]
             tau = torch.where(
-                advantages_per_token > 0,
+                advantages > 0,
                 torch.full_like(ratio, self.tau_pos),
                 torch.full_like(ratio, self.tau_neg),
             )
             soft_gate = torch.sigmoid(tau * (ratio - 1.0)) * (4.0 / tau)
 
-            per_token_loss = -soft_gate * advantages_per_token
+            per_token_loss = -soft_gate * advantages
             loss = (
                 (per_token_loss * completion_mask).sum(dim=1)
                 / completion_mask.sum(dim=1).clamp_min(1)
@@ -401,7 +318,6 @@ def run_sapo_training():
         SAPO_CONFIG["model_name"],
         trust_remote_code=True,
         padding_side="left",
-        local_files_only=True,  # 仅使用本地缓存
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -412,7 +328,6 @@ def run_sapo_training():
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
         device_map="auto",
-        local_files_only=True,  # 仅使用本地缓存
     )
 
     sft_adapter_path = Path(SAPO_CONFIG["sft_adapter_path"])
@@ -426,10 +341,6 @@ def run_sapo_training():
     else:
         logger.warning("SFT adapter not found. SAPO will run on the base model.")
         model = base_model
-
-    # 修复 TRL 库兼容性问题：添加 warnings_issued 属性
-    if not hasattr(model, "warnings_issued"):
-        model.warnings_issued = {}
 
     raw_data = load_rl_dataset()
     train_dataset = prepare_dataset_for_rl(raw_data, tokenizer)
@@ -472,7 +383,7 @@ def run_sapo_training():
         args=training_args,
         train_dataset=train_dataset,
         reward_funcs=combined_reward_fn,
-        processing_class=tokenizer,
+        tokenizer=tokenizer,
         tau_pos=SAPO_CONFIG["tau_pos"],
         tau_neg=SAPO_CONFIG["tau_neg"],
         callbacks=[CallbackAdapter(callback_sink)],

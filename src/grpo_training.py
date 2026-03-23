@@ -12,6 +12,7 @@ Stage C - GRPO 强化学习 (Group Relative Policy Optimization)
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -53,7 +54,9 @@ GRPO_LOG_DIR = PROJECT_ROOT / "outputs" / "grpo_logs"
 # GRPO 训练超参数
 # ============================================================
 GRPO_CONFIG = {
-    "model_name": "Qwen/Qwen2.5-0.5B",  # 基座模型（SFT 模型基于此）
+    "model_name": os.environ.get(
+        "BASE_MODEL_PATH", "/home/lyl/models/Qwen/Qwen2___5-0___5B"
+    ),  # 基座模型（SFT 模型基于此）
     "sft_adapter_path": str(SFT_MODEL_DIR),  # SFT LoRA adapter 路径
     "learning_rate": 5e-7,  # GRPO 学习率（较 SFT 更低）
     "num_train_epochs": 1,
@@ -324,6 +327,7 @@ def run_grpo_training():
         GRPO_CONFIG["model_name"],
         trust_remote_code=True,
         padding_side="left",  # GRPO 生成时需要左 padding
+        local_files_only=True,  # 仅使用本地缓存
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -335,6 +339,7 @@ def run_grpo_training():
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
         device_map="auto",
+        local_files_only=True,  # 仅使用本地缓存
     )
 
     # 如果 SFT adapter 存在，加载 LoRA adapter
@@ -353,6 +358,10 @@ def run_grpo_training():
             f"SFT adapter 未找到: {sft_adapter_path}, 将直接在基座模型上进行 GRPO"
         )
         model = base_model
+
+    # 修复 TRL 库兼容性问题：添加 warnings_issued 属性
+    if not hasattr(model, "warnings_issued"):
+        model.warnings_issued = {}
 
     # ---- 步骤 3: 准备数据集 ----
     raw_data = load_rl_dataset()
@@ -397,7 +406,7 @@ def run_grpo_training():
         args=training_args,
         train_dataset=train_dataset,
         reward_funcs=combined_reward_fn,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
     )
 
     # 启动训练

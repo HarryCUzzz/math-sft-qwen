@@ -15,13 +15,16 @@ Stage D - 评估 (Evaluation)
 - outputs/eval_results/ 目录下的 JSON 结果文件和对比表格
 """
 
-import os
-import re
 import json
 import logging
-import torch
+import os
+import re
 from pathlib import Path
-from collections import defaultdict
+
+import torch
+
+# 设置 Hugging Face 镜像源（用于国内网络环境）
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,31 +43,39 @@ EVAL_RESULTS_DIR = PROJECT_ROOT / "outputs" / "eval_results"
 # ============================================================
 # 评估配置
 # ============================================================
+# 使用本地模型路径（如果网络不可达）
+# 可以通过环境变量 BASE_MODEL_PATH 覆盖，或者直接修改此处的路径
 EVAL_CONFIG = {
-    "base_model": "Qwen/Qwen2.5-0.5B",
-    "max_new_tokens": 1024,          # 生成的最大 token 数
-    "temperature": 0.0,               # 评估时使用贪心解码（temperature=0）
+    "base_model": os.environ.get(
+        "BASE_MODEL_PATH", "/home/lyl/models/Qwen/Qwen2___5-0___5B"
+    ),
+    "max_new_tokens": 1024,  # 生成的最大 token 数
+    "temperature": 0.0,  # 评估时使用贪心解码（temperature=0）
     "do_sample": False,
-    "num_eval_samples": None,         # None 表示全量评估，可设为整数进行快速测试
+    "num_eval_samples": None,  # None 表示全量评估，可设为整数进行快速测试
 }
 
 # 评估数据集列表
+# 先尝试 ModelScope，失败则回退到 HuggingFace 镜像
 EVAL_DATASETS = {
     "math500": {
-        "name": "HuggingFaceH4/MATH-500",
+        "name_modelscope": "MATH-500",
+        "name_hf": "HuggingFaceH4/MATH-500",
         "split": "test",
         "question_key": "problem",
         "answer_key": "answer",
     },
     "gsm8k": {
-        "name": "openai/gsm8k",
+        "name_modelscope": "modelscope/gsm8k",
+        "name_hf": "openai/gsm8k",
         "subset": "main",
         "split": "test",
         "question_key": "question",
         "answer_key": "answer",
     },
     "theoremqa": {
-        "name": "TIGER-Lab/TheoremQA",
+        "name_modelscope": "TIGER-Lab/TheoremQA",
+        "name_hf": "TIGER-Lab/TheoremQA",
         "split": "test",
         "question_key": "Question",
         "answer_key": "Answer",
@@ -81,7 +92,7 @@ def extract_boxed_answer(text):
     """
     if not text:
         return None
-    pattern = r'\\boxed\{'
+    pattern = r"\\boxed\{"
     matches = list(re.finditer(pattern, text))
     if not matches:
         return None
@@ -91,13 +102,13 @@ def extract_boxed_answer(text):
     depth = 1
     i = start
     while i < len(text) and depth > 0:
-        if text[i] == '{':
+        if text[i] == "{":
             depth += 1
-        elif text[i] == '}':
+        elif text[i] == "}":
             depth -= 1
         i += 1
     if depth == 0:
-        return text[start:i-1].strip()
+        return text[start : i - 1].strip()
     return None
 
 
@@ -148,9 +159,9 @@ def check_answer(predicted, reference, dataset_name="default"):
     # 如果没找到 boxed，尝试提取最后一行的数字
     if pred_answer is None:
         # 尝试从最后一行提取数字
-        lines = predicted.strip().split('\n')
+        lines = predicted.strip().split("\n")
         for line in reversed(lines):
-            nums = re.findall(r'-?\d+\.?\d*', line)
+            nums = re.findall(r"-?\d+\.?\d*", line)
             if nums:
                 pred_answer = nums[-1]
                 break
@@ -180,8 +191,8 @@ def load_model_and_tokenizer(model_type="base"):
     返回:
         (model, tokenizer) 元组
     """
-    from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     base_name = EVAL_CONFIG["base_model"]
 
@@ -192,6 +203,7 @@ def load_model_and_tokenizer(model_type="base"):
         base_name,
         trust_remote_code=True,
         padding_side="left",
+        local_files_only=True,  # 仅使用本地缓存，不尝试下载
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -203,6 +215,7 @@ def load_model_and_tokenizer(model_type="base"):
             trust_remote_code=True,
             torch_dtype=torch.bfloat16,
             device_map="auto",
+            local_files_only=True,  # 仅使用本地缓存
         )
     elif model_type == "sft":
         # 加载基座模型 + SFT LoRA adapter
@@ -211,12 +224,13 @@ def load_model_and_tokenizer(model_type="base"):
             trust_remote_code=True,
             torch_dtype=torch.bfloat16,
             device_map="auto",
+            local_files_only=True,  # 仅使用本地缓存
         )
         if (SFT_MODEL_DIR / "adapter_config.json").exists():
             model = PeftModel.from_pretrained(base_model, str(SFT_MODEL_DIR))
             model = model.merge_and_unload()
         else:
-            logger.warning(f"SFT adapter 未找到，将使用基座模型代替")
+            logger.warning("SFT adapter 未找到，将使用基座模型代替")
             model = base_model
     elif model_type == "grpo":
         # 加载 GRPO 模型
@@ -228,12 +242,13 @@ def load_model_and_tokenizer(model_type="base"):
                 device_map="auto",
             )
         else:
-            logger.warning(f"GRPO 模型未找到，将使用基座模型代替")
+            logger.warning("GRPO 模型未找到，将使用基座模型代替")
             model = AutoModelForCausalLM.from_pretrained(
                 base_name,
                 trust_remote_code=True,
                 torch_dtype=torch.bfloat16,
                 device_map="auto",
+                local_files_only=True,  # 仅使用本地缓存
             )
     else:
         raise ValueError(f"未知的模型类型: {model_type}")
@@ -249,24 +264,57 @@ def load_model_and_tokenizer(model_type="base"):
 def load_eval_dataset(dataset_key):
     """
     加载评估数据集。
+    先尝试使用 ModelScope，如果失败则回退到 HuggingFace 镜像。
 
     参数:
         dataset_key: 数据集标识 ("math500" | "gsm8k" | "theoremqa")
     返回:
         包含 (question, reference_answer) 的列表
     """
-    from datasets import load_dataset
-
     config = EVAL_DATASETS[dataset_key]
-    logger.info(f"加载评估数据集: {config['name']}")
+    dataset = None
 
+    # 方法1: 尝试使用 ModelScope
     try:
+        from modelscope.msdatasets import MsDataset
+
+        logger.info(f"尝试从 ModelScope 加载数据集: {config['name_modelscope']}")
+
         if "subset" in config:
-            dataset = load_dataset(config["name"], config["subset"], split=config["split"])
+            dataset = MsDataset.load(
+                config["name_modelscope"],
+                subset_name=config["subset"],
+                split=config["split"]
+            )
         else:
-            dataset = load_dataset(config["name"], split=config["split"])
+            dataset = MsDataset.load(config["name_modelscope"], split=config["split"])
+
+        logger.info(f"  ✓ ModelScope 加载成功")
     except Exception as e:
-        logger.error(f"数据集 {config['name']} 加载失败: {e}")
+        logger.warning(f"  ✗ ModelScope 加载失败: {e}")
+
+        # 方法2: 回退到 HuggingFace 镜像
+        try:
+            from datasets import load_dataset
+
+            logger.info(f"尝试从 HuggingFace 镜像加载数据集: {config['name_hf']}")
+
+            if "subset" in config:
+                dataset = load_dataset(
+                    config["name_hf"],
+                    config["subset"],
+                    split=config["split"]
+                )
+            else:
+                dataset = load_dataset(config["name_hf"], split=config["split"])
+
+            logger.info(f"  ✓ HuggingFace 加载成功")
+        except Exception as e2:
+            logger.error(f"  ✗ HuggingFace 加载也失败: {e2}")
+            return []
+
+    if dataset is None:
+        logger.error(f"数据集 {dataset_key} 加载失败")
         return []
 
     # 提取问题和答案
@@ -275,14 +323,16 @@ def load_eval_dataset(dataset_key):
         question = item.get(config["question_key"], "")
         answer = item.get(config["answer_key"], "")
         if question and answer:
-            eval_data.append({
-                "question": str(question),
-                "reference_answer": str(answer),
-            })
+            eval_data.append(
+                {
+                    "question": str(question),
+                    "reference_answer": str(answer),
+                }
+            )
 
     # 限制评估样本数（调试用）
     if EVAL_CONFIG["num_eval_samples"]:
-        eval_data = eval_data[:EVAL_CONFIG["num_eval_samples"]]
+        eval_data = eval_data[: EVAL_CONFIG["num_eval_samples"]]
 
     logger.info(f"  加载了 {len(eval_data)} 条评估数据")
     return eval_data
@@ -329,7 +379,7 @@ def generate_answer(model, tokenizer, question, system_prompt=None):
     )
 
     # 只取新生成的 token（去掉 prompt 部分）
-    generated_ids = outputs[0][inputs["input_ids"].shape[1]:]
+    generated_ids = outputs[0][inputs["input_ids"].shape[1] :]
     answer = tokenizer.decode(generated_ids, skip_special_tokens=True)
 
     return answer
@@ -365,17 +415,19 @@ def evaluate_model_on_dataset(model, tokenizer, eval_data, dataset_key):
         if is_correct:
             correct += 1
 
-        results.append({
-            "question": item["question"][:200],  # 截断以节省空间
-            "reference_answer": item["reference_answer"],
-            "prediction": prediction[:500],
-            "is_correct": is_correct,
-        })
+        results.append(
+            {
+                "question": item["question"][:200],  # 截断以节省空间
+                "reference_answer": item["reference_answer"],
+                "prediction": prediction[:500],
+                "is_correct": is_correct,
+            }
+        )
 
         # 每 50 条打印一次进度
         if (idx + 1) % 50 == 0:
             acc = correct / (idx + 1) * 100
-            logger.info(f"  进度: {idx+1}/{total}, 当前准确率: {acc:.1f}%")
+            logger.info(f"  进度: {idx + 1}/{total}, 当前准确率: {acc:.1f}%")
 
     accuracy = correct / max(total, 1) * 100
 
@@ -502,13 +554,21 @@ def generate_comparison_table(all_results):
 # ============================================================
 def main():
     import argparse
+
     parser = argparse.ArgumentParser(description="Stage D: 模型评估")
-    parser.add_argument("--models", type=str, nargs="+", default=["base", "sft", "grpo"],
-                        help="要评估的模型类型")
-    parser.add_argument("--datasets", type=str, nargs="+", default=None,
-                        help="要评估的数据集")
-    parser.add_argument("--num_samples", type=int, default=None,
-                        help="每个数据集的评估样本数（调试用）")
+    parser.add_argument(
+        "--models",
+        type=str,
+        nargs="+",
+        default=["base", "sft", "grpo"],
+        help="要评估的模型类型",
+    )
+    parser.add_argument(
+        "--datasets", type=str, nargs="+", default=None, help="要评估的数据集"
+    )
+    parser.add_argument(
+        "--num_samples", type=int, default=None, help="每个数据集的评估样本数（调试用）"
+    )
     args = parser.parse_args()
 
     if args.num_samples:

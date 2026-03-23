@@ -1,0 +1,45 @@
+AIMS5740 Final Project - Topic 1: Data Selection + RL for LLMs (Math / STEM)
+核心方向
+DeepSeek-R1 Training PipelineSFT Cold Start Reasoning w/GRPOBootstrap Instruction Following Formatting & CorrectnessAlignment w/GRPO SFT + RejectionHelpful & Harmless Synthetic data w/800k examples
+1. Background
+LLMs 在数学和 STEM 推理任务中表现不佳，并非因为模型能力不足，而是源于以下问题：
+训练数据存在噪声或对齐偏差
+有监督微调（SFT）以模仿为优化目标，而非正确性
+推理错误会在多步骤中不断累积
+近期研究表明，数据筛选 + 强化学习（RL）风格的后训练 能显著提升推理准确率。
+2. Related Work
+建议引用并关联以下研究成果：
+MetaMath / MetaMathQA：https://meta-math.github.io/（大规模数学数据筛选与训练信号构建）
+GRPO (Group Relative Policy Optimization)：https://huggingface.co/learn/cookbook/en/fine_tuning_llm_grpo_trl（面向推理型后训练的实用 RL 方案）
+Verifier-based RL for math reasoning：https://arxiv.org/abs/2110.14168（训练验证器指导数学问题求解）
+3. Suggested Base Models (similar to hm1)
+任选其一，优先选择小模型（RL 训练更稳定、迭代速度更快）：
+Qwen2.5-0.5B
+Llama-3.2-1B-Instruct
+4. Pipeline Overview
+Stage A - Data Selection
+至少选择一个数据集：
+https://huggingface.co/datasets/zwhe99/DeepMath-103K
+SynthLabsAI/Big-Math-RL-Verified
+指令数据中的 STEM 子集（可验证）
+执行明确的过滤规则，例如：
+移除模糊的问题
+强制统一、规范的最终答案格式
+控制问题的长度和难度
+Stage B - Supervised Fine-Tuning (SFT)
+框架：llama-factory
+输出要求：基础模型与 SFT 模型的对比结果（损失值、评估准确率）
+Stage C - Reinforcement Learning
+奖励机制选择：基于验证器的奖励（精确匹配）奖励设计要求：必须包含至少 2 个组成部分，例如：
+正确性奖励
+格式 / 推理结构奖励
+5. Evaluation Benchmarks
+使用 lm-eval-harness、其他标准评估流水线，或官方评估代码，可选数据集：
+HuggingFaceH4/MATH-500
+https://huggingface.co/datasets/openai/gsm8k
+https://huggingface.co/datasets/TIGER-Lab/TheoremQA
+6. Analysis Expectations
+需完成以下方向的分析：
+强化学习是否提升了推理正确性，但损害了通用问答能力？
+模型性能对数据过滤策略的敏感性如何？
+典型的失效模式分析（格式偏移、奖励利用、通用性能变化）。

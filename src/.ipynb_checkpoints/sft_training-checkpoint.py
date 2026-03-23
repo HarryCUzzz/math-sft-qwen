@@ -14,9 +14,10 @@ Stage B - 有监督微调 (Supervised Fine-Tuning)
 - outputs/sft_logs/      (训练日志)
 """
 
+import os
 import json
-import logging
 import subprocess
+import logging
 from pathlib import Path
 
 logging.basicConfig(
@@ -24,23 +25,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-
-def _add_file_handler(log_dir: Path) -> None:
-    """将日志同时写入文件，避免重复添加 handler。"""
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / "sft_training.log"
-    if not any(
-        isinstance(h, logging.FileHandler)
-        and getattr(h, "baseFilename", None) == str(log_file.resolve())
-        for h in logger.handlers
-    ):
-        fh = logging.FileHandler(log_file, encoding="utf-8")
-        fh.setLevel(logging.INFO)
-        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-        logger.addHandler(fh)
-        logger.info(f"日志文件: {log_file}")
-
 
 # ============================================================
 # 路径配置
@@ -56,43 +40,51 @@ LOG_DIR = PROJECT_ROOT / "outputs" / "sft_logs"
 # ============================================================
 CONFIG = {
     # 模型配置
-    "model_name_or_path": "/home/lyl/models/Qwen/Qwen2___5-0___5B",  # 基座模型
+    "model_name_or_path": "Qwen/Qwen2.5-0.5B",  # 基座模型
     "trust_remote_code": True,
+
     # 训练方法
-    "stage": "sft",  # 有监督微调阶段
+    "stage": "sft",                    # 有监督微调阶段
     "do_train": True,
-    "finetuning_type": "lora",  # 使用 LoRA 微调以节省显存
+    "finetuning_type": "lora",         # 使用 LoRA 微调以节省显存
+
     # LoRA 配置
-    "lora_rank": 64,  # LoRA 秩
-    "lora_alpha": 128,  # LoRA alpha
-    "lora_target": "all",  # 对所有线性层应用 LoRA
+    "lora_rank": 64,                   # LoRA 秩
+    "lora_alpha": 128,                 # LoRA alpha
+    "lora_target": "all",              # 对所有线性层应用 LoRA
     "lora_dropout": 0.05,
+
     # 数据配置
-    "dataset": "math_sft_train",  # 数据集名称（需注册到 dataset_info.json）
-    "template": "qwen",  # Qwen 模型的 chat template
-    "cutoff_len": 2048,  # 最大序列长度
+    "dataset": "math_sft_train",       # 数据集名称（需注册到 dataset_info.json）
+    "template": "qwen",                # Qwen 模型的 chat template
+    "cutoff_len": 2048,                # 最大序列长度
     "preprocessing_num_workers": 4,
+
     # 训练超参数
-    "per_device_train_batch_size": 2,
-    "gradient_accumulation_steps": 16,  # 有效 batch size = 4 * 8 = 32
+    "per_device_train_batch_size": 4,
+    "gradient_accumulation_steps": 8,  # 有效 batch size = 4 * 8 = 32
     "learning_rate": 2e-5,
     "num_train_epochs": 3.0,
-    "lr_scheduler_type": "cosine",  # 余弦退火学习率
-    "warmup_ratio": 0.1,  # 前 10% 步做 warmup
+    "lr_scheduler_type": "cosine",     # 余弦退火学习率
+    "warmup_ratio": 0.1,              # 前 10% 步做 warmup
     "weight_decay": 0.01,
+
     # 精度与优化
-    "bf16": True,  # 使用 bfloat16 混合精度训练
-    "optim": "adamw_torch",  # AdamW 优化器
+    "bf16": True,                      # 使用 bfloat16 混合精度训练
+    "optim": "adamw_torch",            # AdamW 优化器
+
     # 日志与保存
     "logging_steps": 10,
     "save_steps": 200,
-    "save_total_limit": 3,  # 最多保留 3 个检查点
-    "report_to": "tensorboard",  # 使用 TensorBoard 记录训练日志
+    "save_total_limit": 3,             # 最多保留 3 个检查点
+    "report_to": "tensorboard",        # 使用 TensorBoard 记录训练日志
+
     # 评估
-    "val_size": 0.05,  # 从训练集中取 5% 做验证
-    "per_device_eval_batch_size": 2,
+    "val_size": 0.05,                  # 从训练集中取 5% 做验证
+    "per_device_eval_batch_size": 4,
     "eval_strategy": "steps",
     "eval_steps": 200,
+
     # 其他
     "seed": 42,
 }
@@ -119,7 +111,7 @@ def register_dataset():
     sft_train_path = str(DATA_FILTERED / "sft_train.json")
     dataset_info["math_sft_train"] = {
         "file_name": sft_train_path,
-        "formatting": "alpaca",  # alpaca 格式: instruction + input + output
+        "formatting": "alpaca",        # alpaca 格式: instruction + input + output
         "columns": {
             "prompt": "instruction",
             "query": "input",
@@ -200,20 +192,15 @@ def run_sft_training(config_path):
     logger.info("开始 SFT 训练")
     logger.info("=" * 60)
     logger.info(f"基座模型: {CONFIG['model_name_or_path']}")
-    logger.info(
-        f"微调方法: LoRA (rank={CONFIG['lora_rank']}, alpha={CONFIG['lora_alpha']})"
-    )
-    logger.info(
-        f"Batch size: {CONFIG['per_device_train_batch_size']} x {CONFIG['gradient_accumulation_steps']} = {CONFIG['per_device_train_batch_size'] * CONFIG['gradient_accumulation_steps']}"
-    )
+    logger.info(f"微调方法: LoRA (rank={CONFIG['lora_rank']}, alpha={CONFIG['lora_alpha']})")
+    logger.info(f"Batch size: {CONFIG['per_device_train_batch_size']} x {CONFIG['gradient_accumulation_steps']} = {CONFIG['per_device_train_batch_size'] * CONFIG['gradient_accumulation_steps']}")
     logger.info(f"学习率: {CONFIG['learning_rate']}")
     logger.info(f"训练轮数: {CONFIG['num_train_epochs']}")
     logger.info(f"输出目录: {OUTPUT_DIR}")
 
     # 使用 llamafactory-cli 启动训练
     cmd = [
-        "llamafactory-cli",
-        "train",
+        "llamafactory-cli", "train",
         str(config_path),
     ]
 
@@ -228,15 +215,10 @@ def run_sft_training(config_path):
         )
         logger.info("SFT 训练完成！")
     except FileNotFoundError:
-        logger.warning(
-            "llamafactory-cli 未找到，尝试使用 python -m llamafactory.cli 方式..."
-        )
+        logger.warning("llamafactory-cli 未找到，尝试使用 python -m llamafactory.cli 方式...")
         # 备选方案：直接调用 Python 模块
         cmd_alt = [
-            "python",
-            "-m",
-            "llamafactory.cli",
-            "train",
+            "python", "-m", "llamafactory.cli", "train",
             str(config_path),
         ]
         subprocess.run(cmd_alt, cwd=str(LLAMA_FACTORY_DIR), check=True, text=True)
@@ -255,17 +237,16 @@ def run_sft_with_transformers():
     这个方案更灵活，但需要手动处理数据加载和模板。
     """
     import torch
-    from datasets import load_dataset as hf_load_dataset
-    from peft import LoraConfig, TaskType, get_peft_model
     from transformers import (
         AutoModelForCausalLM,
         AutoTokenizer,
-        DataCollatorForSeq2Seq,
-        Trainer,
         TrainingArguments,
+        Trainer,
+        DataCollatorForSeq2Seq,
     )
+    from peft import LoraConfig, get_peft_model, TaskType
+    from datasets import load_dataset as hf_load_dataset
 
-    _add_file_handler(LOG_DIR)
     logger.info("使用 Transformers + PEFT 直接进行 SFT 训练...")
 
     # ---- 加载分词器和模型 ----
@@ -294,7 +275,7 @@ def run_sft_with_transformers():
         r=CONFIG["lora_rank"],
         lora_alpha=CONFIG["lora_alpha"],
         lora_dropout=CONFIG.get("lora_dropout", 0.05),
-        target_modules="all-linear",  # 对所有线性层应用 LoRA
+        target_modules="all-linear",   # 对所有线性层应用 LoRA
     )
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()  # 打印可训练参数量
@@ -320,16 +301,8 @@ def run_sft_with_transformers():
         ):
             # 构建 Qwen chat 格式
             messages = [
-                {
-                    "role": "system",
-                    "content": "You are a helpful math assistant. Solve problems step by step.",
-                },
-                {
-                    "role": "user",
-                    "content": f"{instruction}\n\n{input_text}"
-                    if input_text
-                    else instruction,
-                },
+                {"role": "system", "content": "You are a helpful math assistant. Solve problems step by step."},
+                {"role": "user", "content": f"{instruction}\n\n{input_text}" if input_text else instruction},
             ]
             # 使用 tokenizer 的 apply_chat_template 方法
             prompt = tokenizer.apply_chat_template(
@@ -389,8 +362,7 @@ def run_sft_with_transformers():
         save_total_limit=CONFIG["save_total_limit"],
         eval_strategy="steps",
         eval_steps=CONFIG["eval_steps"],
-        report_to=["tensorboard", "swanlab"],
-        run_name="sft_qwen2.5_0.5b",
+        report_to="tensorboard",
         seed=CONFIG["seed"],
         remove_unused_columns=False,
     )
@@ -412,7 +384,7 @@ def run_sft_with_transformers():
     )
 
     logger.info("开始训练...")
-    train_result = trainer.train(resume_from_checkpoint=True)
+    train_result = trainer.train()
 
     # ---- 保存模型和训练指标 ----
     trainer.save_model()
@@ -445,15 +417,10 @@ def main():
     3. 启动训练
     """
     import argparse
-
     parser = argparse.ArgumentParser(description="Stage B: SFT 训练")
-    parser.add_argument(
-        "--method",
-        type=str,
-        default="llamafactory",
-        choices=["llamafactory", "transformers"],
-        help="训练方法: llamafactory (推荐) 或 transformers (备选)",
-    )
+    parser.add_argument("--method", type=str, default="llamafactory",
+                        choices=["llamafactory", "transformers"],
+                        help="训练方法: llamafactory (推荐) 或 transformers (备选)")
     args = parser.parse_args()
 
     # 检查筛选后的数据是否存在
