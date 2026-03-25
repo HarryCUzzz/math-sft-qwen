@@ -31,13 +31,25 @@ if [ "$USE_MODELSCOPE" = "true" ]; then
         pip install modelscope
     fi
     MS_MODEL_NAME="qwen/Qwen3.5-4B"  # ModelScope 官方名称
+
+    # ModelScope 会创建子目录，需要处理
+    TEMP_DIR="/tmp/qwen_download_$$"
     python -c "
 from modelscope import snapshot_download
-import os
-os.environ['MODELSCOPE_CACHE'] = '$TARGET_DIR'
-snapshot_download('$MS_MODEL_NAME', cache_dir='$TARGET_DIR')
-print('下载完成!')
-"
+model_dir = snapshot_download('$MS_MODEL_NAME', cache_dir='$TEMP_DIR')
+print(model_dir)
+" > /tmp/model_path_$$.txt
+
+    ACTUAL_MODEL_PATH=$(cat /tmp/model_path_$$.txt)
+    rm /tmp/model_path_$$.txt
+
+    echo "实际模型路径: $ACTUAL_MODEL_PATH"
+
+    # 清理目标目录并移动文件
+    rm -rf "$TARGET_DIR"
+    mv "$ACTUAL_MODEL_PATH" "$TARGET_DIR"
+    rm -rf "$TEMP_DIR"
+    echo "文件已移动到: $TARGET_DIR"
 else
     # HuggingFace 下载（核心修复 + 精准模型名）
     echo "使用 HuggingFace 下载..."
@@ -62,19 +74,35 @@ echo "模型路径: $TARGET_DIR"
 echo "=========================================="
 
 # 严格验证 Qwen3.5-4B 完整性
-if [ -f "$TARGET_DIR/config.json" ]; then
+# 处理符号链接，获取实际路径
+REAL_TARGET_DIR=$(cd "$TARGET_DIR" 2>/dev/null && pwd || echo "$TARGET_DIR")
+
+if [ ! -d "$REAL_TARGET_DIR" ]; then
+    echo "❌ 验证失败: 目标目录不存在"
+    exit 1
+fi
+
+if [ -f "$REAL_TARGET_DIR/config.json" ]; then
+    echo "✅ 验证通过: config.json 存在"
+elif [ -f "$TARGET_DIR/qwen/Qwen3.5-4B/config.json" ]; then
+    # ModelScope 下载但未完全移动的情况
+    echo "⚠️  检测到 ModelScope 子目录结构，移动文件..."
+    mv "$TARGET_DIR/qwen/Qwen3.5-4B"/* "$TARGET_DIR/" 2>/dev/null || true
+    rmdir "$TARGET_DIR/qwen/Qwen3.5-4B" "$TARGET_DIR/qwen" 2>/dev/null || true
     echo "✅ 验证通过: config.json 存在"
 else
-    echo "❌ 验证失败: config.json 不存在，下载不完整"
+    echo "❌ 验证失败: config.json 不存在，下载可能不完整"
+    ls -la "$TARGET_DIR" | head -20
     exit 1
 fi
 
 # 检查权重文件（Qwen3.5-4B 主要用 .safetensors 格式）
-if ls "$TARGET_DIR"/*.safetensors 1> /dev/null 2>&1; then
+if ls "$REAL_TARGET_DIR"/*.safetensors 1> /dev/null 2>&1; then
     echo "✅ 验证通过: .safetensors 权重文件存在"
-elif ls "$TARGET_DIR"/*.bin 1> /dev/null 2>&1; then
+elif ls "$REAL_TARGET_DIR"/*.bin 1> /dev/null 2>&1; then
     echo "✅ 验证通过: .bin 权重文件存在"
 else
     echo "❌ 验证失败: 未找到任何权重文件"
+    ls -la "$REAL_TARGET_DIR" | grep -E "\.safetensors|\.bin" || echo "未找到模型文件"
     exit 1
 fi

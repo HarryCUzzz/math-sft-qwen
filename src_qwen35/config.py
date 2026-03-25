@@ -26,6 +26,31 @@ MODEL_PATH = os.environ.get(
 )
 
 # ============================================================
+# 实验跟踪配置 (Experiment Tracking)
+# ============================================================
+# 支持的日志工具: tensorboard, swanlab, wandb, none
+# 可通过环境变量 LOGGER 指定: tensorboard/swanlab/wandb/none
+LOGGER_TYPE = os.environ.get("LOGGER", "tensorboard").lower()
+
+# SwanLab 配置
+SWANLAB_PROJECT = os.environ.get("SWANLAB_PROJECT", "Qwen3.5-4B-MathRL")
+SWANLAB_WORKSPACE = os.environ.get("SWANLAB_WORKSPACE", None)  # 留空使用默认
+
+# 根据 LOGGER_TYPE 生成 report_to 列表
+def get_report_to():
+    """获取日志报告目标"""
+    if LOGGER_TYPE == "none":
+        return []
+    elif LOGGER_TYPE == "swanlab":
+        return ["swanlab"]
+    elif LOGGER_TYPE == "wandb":
+        return ["wandb"]
+    else:  # 默认 tensorboard
+        return ["tensorboard"]
+
+DEFAULT_REPORT_TO = get_report_to()
+
+# ============================================================
 # Qwen3.5-4B 特性配置 - Thinking Mode
 # ============================================================
 THINKING_MODE_ENABLED = True
@@ -91,13 +116,13 @@ SFT_CONFIG_SINGLE = {
     # 日志与保存
     "logging_steps": 10,
     "save_steps": 500,                   # 增加保存间隔
-    "save_total_limit": 2,
+    "save_total_limit": 5,               # 保留最近 5 个检查点（增加容错）
     "eval_strategy": "steps",
     "eval_steps": 500,
 
     # 其他
     "seed": 42,
-    "report_to": ["tensorboard"],
+    "report_to": None,  # 将在 get_sft_config() 中动态设置
 }
 
 # ============================================================
@@ -210,7 +235,7 @@ def get_num_gpus():
 
 def get_sft_config(mode=None):
     """
-    获取 SFT 配置
+    获取 SFT 配置（支持环境变量覆盖）
 
     Args:
         mode: "single" 或 "multi"，如果为 None 则自动检测
@@ -222,14 +247,37 @@ def get_sft_config(mode=None):
         mode = "multi" if get_num_gpus() >= 2 else "single"
 
     if mode == "multi":
-        return SFT_CONFIG_MULTI.copy()
+        config = SFT_CONFIG_MULTI.copy()
     else:
-        return SFT_CONFIG_SINGLE.copy()
+        config = SFT_CONFIG_SINGLE.copy()
+
+    # 环境变量覆盖（优先级最高）
+    if "EPOCHS" in os.environ:
+        config["num_train_epochs"] = float(os.environ["EPOCHS"])
+    if "LORA_RANK" in os.environ:
+        config["lora_rank"] = int(os.environ["LORA_RANK"])
+    if "LORA_ALPHA" in os.environ:
+        config["lora_alpha"] = int(os.environ["LORA_ALPHA"])
+    if "LEARNING_RATE" in os.environ:
+        config["learning_rate"] = float(os.environ["LEARNING_RATE"])
+    if "MAX_LENGTH" in os.environ:
+        config["cutoff_len"] = int(os.environ["MAX_LENGTH"])
+    if "GRAD_ACCUM_STEPS" in os.environ:
+        config["gradient_accumulation_steps"] = int(os.environ["GRAD_ACCUM_STEPS"])
+    if "SAVE_STEPS" in os.environ:
+        config["save_steps"] = int(os.environ["SAVE_STEPS"])
+    if "WARMUP_RATIO" in os.environ:
+        config["warmup_ratio"] = float(os.environ["WARMUP_RATIO"])
+
+    # 设置日志工具
+    config["report_to"] = DEFAULT_REPORT_TO
+
+    return config
 
 
 def get_grpo_config(mode=None):
     """
-    获取 GRPO 配置
+    获取 GRPO 配置（支持环境变量覆盖）
 
     Args:
         mode: "single" 或 "multi"，如果为 None 则自动检测
@@ -241,9 +289,29 @@ def get_grpo_config(mode=None):
         mode = "multi" if get_num_gpus() >= 2 else "single"
 
     if mode == "multi":
-        return GRPO_CONFIG_MULTI.copy()
+        config = GRPO_CONFIG_MULTI.copy()
     else:
-        return GRPO_CONFIG_SINGLE.copy()
+        config = GRPO_CONFIG_SINGLE.copy()
+
+    # 环境变量覆盖（优先级最高）
+    if "MAX_STEPS" in os.environ:
+        config["max_steps"] = int(os.environ["MAX_STEPS"])
+    if "NUM_GENERATIONS" in os.environ:
+        config["num_generations"] = int(os.environ["NUM_GENERATIONS"])
+    if "MAX_COMPLETION_LENGTH" in os.environ:
+        config["max_completion_length"] = int(os.environ["MAX_COMPLETION_LENGTH"])
+    if "LEARNING_RATE" in os.environ:
+        config["learning_rate"] = float(os.environ["LEARNING_RATE"])
+    if "TEMPERATURE" in os.environ:
+        config["temperature"] = float(os.environ["TEMPERATURE"])
+    if "BETA" in os.environ:
+        config["beta"] = float(os.environ["BETA"])
+    if "GRAD_ACCUM_STEPS" in os.environ:
+        config["gradient_accumulation_steps"] = int(os.environ["GRAD_ACCUM_STEPS"])
+    if "SAVE_STEPS" in os.environ:
+        config["save_steps"] = int(os.environ["SAVE_STEPS"])
+
+    return config
 
 
 def print_config_summary(config, name="Config"):

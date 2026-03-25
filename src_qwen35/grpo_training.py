@@ -34,6 +34,10 @@ from config import (
     OUTPUT_BASE,
     QUANTIZATION_CONFIG,
     THINKING_SYSTEM_PROMPT,
+    LOGGER_TYPE,
+    SWANLAB_PROJECT,
+    SWANLAB_WORKSPACE,
+    DEFAULT_REPORT_TO,
     get_grpo_config,
     print_config_summary,
 )
@@ -257,6 +261,23 @@ def run_grpo_training(mode=None):
     config = get_grpo_config(mode)
     print_config_summary(config, "GRPO Training Config")
 
+    # 初始化 SwanLab（如果启用）
+    if LOGGER_TYPE == "swanlab":
+        try:
+            import swanlab
+            swanlab.init(
+                project=SWANLAB_PROJECT,
+                workspace=SWANLAB_WORKSPACE,
+                experiment_name=f"GRPO-{mode or 'auto'}",
+                description=f"Qwen3.5-4B GRPO Training ({mode or 'auto'} GPU)",
+                config=config,
+            )
+            logger.info(f"SwanLab 初始化成功: 项目={SWANLAB_PROJECT}")
+        except ImportError:
+            logger.warning("SwanLab 未安装，将退回到 TensorBoard")
+        except Exception as e:
+            logger.warning(f"SwanLab 初始化失败: {e}，将退回到 TensorBoard")
+
     logger.info("=" * 60)
     logger.info("Stage C - Qwen3.5-4B GRPO 训练开始")
     logger.info("=" * 60)
@@ -344,7 +365,7 @@ def run_grpo_training(mode=None):
         max_steps=config["max_steps"],
         seed=config["seed"],
         bf16=config["bf16"],
-        report_to=["tensorboard"],
+        report_to=DEFAULT_REPORT_TO,
         remove_unused_columns=False,
     )
 

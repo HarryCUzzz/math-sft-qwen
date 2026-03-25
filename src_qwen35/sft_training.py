@@ -34,6 +34,9 @@ from config import (
     OUTPUT_BASE,
     QUANTIZATION_CONFIG,
     THINKING_SYSTEM_PROMPT,
+    LOGGER_TYPE,
+    SWANLAB_PROJECT,
+    SWANLAB_WORKSPACE,
     get_sft_config,
     print_config_summary,
 )
@@ -77,6 +80,25 @@ def run_sft_training(mode=None):
     # 获取配置
     config = get_sft_config(mode)
     print_config_summary(config, "SFT Training Config")
+
+    # 初始化 SwanLab（如果启用）
+    if LOGGER_TYPE == "swanlab":
+        try:
+            import swanlab
+            swanlab.init(
+                project=SWANLAB_PROJECT,
+                workspace=SWANLAB_WORKSPACE,
+                experiment_name=f"SFT-{mode or 'auto'}",
+                description=f"Qwen3.5-4B SFT Training ({mode or 'auto'} GPU)",
+                config=config,
+            )
+            logger.info(f"SwanLab 初始化成功: 项目={SWANLAB_PROJECT}")
+        except ImportError:
+            logger.warning("SwanLab 未安装，将退回到 TensorBoard")
+            config["report_to"] = ["tensorboard"]
+        except Exception as e:
+            logger.warning(f"SwanLab 初始化失败: {e}，将退回到 TensorBoard")
+            config["report_to"] = ["tensorboard"]
 
     logger.info("=" * 60)
     logger.info("Stage B - Qwen3.5-4B SFT 训练开始")
