@@ -2,7 +2,7 @@
 set -e
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
-export QWEN35_MODEL_PATH="${QWEN35_MODEL_PATH:-/home/lyl/models/Qwen/Qwen3.5-4B-Base}"
+export QWEN35_MODEL_PATH="${QWEN35_MODEL_PATH:-/home/lyl/models/Qwen/Qwen3.5-4B}"
 export USE_4BIT="${USE_4BIT:-false}"
 export LOGGER="${LOGGER:-tensorboard}"
 export MAX_STEPS="${MAX_STEPS:-300}"
