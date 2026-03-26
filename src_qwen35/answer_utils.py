@@ -17,7 +17,7 @@ BOXED_RE = re.compile(r"\\boxed\{")
 FRACTION_TOKEN_RE = re.compile(r"[-+]?\\frac\{[^{}]+\}\{[^{}]+\}|[-+]?\d+\s*/\s*[-+]?\d+")
 NUMBER_TOKEN_RE = re.compile(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?")
 FINAL_PATTERNS = [
-    re.compile(r"(?:Final answer|final answer|Answer|answer|??)\s*[:?]\s*([^\n]+)"),
+    re.compile(r"(?:Final answer|final answer|Answer|answer)\s*[:?]\s*([^\n]+)"),
     re.compile(r"(?:The answer is|the answer is)\s*[:?]?\s*([^\n]+)"),
     re.compile(r"(?:Therefore|therefore|Thus|thus|Hence|hence)\s*[:,]?\s*([^\n]+)"),
 ]
