@@ -2,6 +2,7 @@
 """Stage B - Qwen3.5-4B-Base SFT on cleaned qwen35_v2 datasets."""
 
 import argparse
+import inspect
 import logging
 import os
 from pathlib import Path
@@ -151,6 +152,46 @@ def _preprocess_dataset(dataset, tokenizer, max_length, num_proc, desc):
     return dataset.remove_columns(["label_token_count"])
 
 
+def _build_training_args(config):
+    kwargs = {
+        "output_dir": str(OUTPUT_DIR),
+        "logging_dir": str(LOG_DIR),
+        "num_train_epochs": config["num_train_epochs"],
+        "max_steps": config["max_steps"],
+        "per_device_train_batch_size": config["per_device_train_batch_size"],
+        "gradient_accumulation_steps": config["gradient_accumulation_steps"],
+        "learning_rate": config["learning_rate"],
+        "lr_scheduler_type": config["lr_scheduler_type"],
+        "warmup_ratio": config["warmup_ratio"],
+        "weight_decay": config["weight_decay"],
+        "bf16": config["bf16"],
+        "tf32": config.get("tf32", False),
+        "logging_steps": config["logging_steps"],
+        "logging_first_step": True,
+        "save_steps": config["save_steps"],
+        "save_total_limit": config["save_total_limit"],
+        "eval_steps": config["eval_steps"],
+        "report_to": config["report_to"],
+        "run_name": "sft_qwen35_4b_base",
+        "seed": config["seed"],
+        "remove_unused_columns": False,
+        "gradient_checkpointing": config.get("gradient_checkpointing", True),
+        "optim": config["optim"],
+        "dataloader_num_workers": 2,
+    }
+
+    parameters = inspect.signature(TrainingArguments.__init__).parameters
+    if "evaluation_strategy" in parameters:
+        kwargs["evaluation_strategy"] = config["eval_strategy"]
+    elif "eval_strategy" in parameters:
+        kwargs["eval_strategy"] = config["eval_strategy"]
+
+    if "save_safetensors" in parameters:
+        kwargs["save_safetensors"] = True
+
+    return TrainingArguments(**kwargs)
+
+
 def run_sft_training(mode=None):
     _add_file_handler(LOG_DIR)
     config = get_sft_config(mode)
@@ -199,34 +240,7 @@ def run_sft_training(mode=None):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    training_args = TrainingArguments(
-        output_dir=str(OUTPUT_DIR),
-        logging_dir=str(LOG_DIR),
-        num_train_epochs=config["num_train_epochs"],
-        max_steps=config["max_steps"],
-        per_device_train_batch_size=config["per_device_train_batch_size"],
-        gradient_accumulation_steps=config["gradient_accumulation_steps"],
-        learning_rate=config["learning_rate"],
-        lr_scheduler_type=config["lr_scheduler_type"],
-        warmup_ratio=config["warmup_ratio"],
-        weight_decay=config["weight_decay"],
-        bf16=config["bf16"],
-        tf32=config.get("tf32", False),
-        logging_steps=config["logging_steps"],
-        logging_first_step=True,
-        save_steps=config["save_steps"],
-        save_total_limit=config["save_total_limit"],
-        eval_strategy=config["eval_strategy"],
-        eval_steps=config["eval_steps"],
-        report_to=config["report_to"],
-        run_name="sft_qwen35_4b_base",
-        seed=config["seed"],
-        remove_unused_columns=False,
-        gradient_checkpointing=config.get("gradient_checkpointing", True),
-        optim=config["optim"],
-        save_safetensors=True,
-        dataloader_num_workers=2,
-    )
+    training_args = _build_training_args(config)
 
     trainer = Trainer(
         model=model,
