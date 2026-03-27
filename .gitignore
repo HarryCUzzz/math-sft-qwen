@@ -22,3 +22,8 @@ Thumbs.db
 *.log
 # 临时文件
 *.tmp
+# WSL 相关文件
+D:\Coding\AI\math-sft-qwen\WSL.md
+
+# 归档文件
+D:\Coding\AI\math-sft-qwen\归档
