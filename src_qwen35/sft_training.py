@@ -29,9 +29,7 @@ from transformers import (
     TrainingArguments,
 )
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = OUTPUT_BASE / "sft_model"
@@ -48,9 +46,7 @@ def _add_file_handler(log_dir: Path) -> None:
     ):
         handler = logging.FileHandler(log_file, encoding="utf-8")
         handler.setLevel(logging.INFO)
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-        )
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
         logger.addHandler(handler)
 
 
@@ -113,9 +109,7 @@ def _preprocess_dataset(dataset, tokenizer, max_length, num_proc, desc):
         label_token_counts = []
 
         for messages in examples["messages"]:
-            prompt_text = tokenizer.apply_chat_template(
-                messages[:-1], tokenize=False, add_generation_prompt=True
-            )
+            prompt_text = tokenizer.apply_chat_template(messages[:-1], tokenize=False, add_generation_prompt=True)
             assistant_text = messages[-1]["content"] + tokenizer.eos_token
             full_text = prompt_text + assistant_text
 
@@ -174,7 +168,7 @@ def _build_training_args(config):
         "save_total_limit": config["save_total_limit"],
         "eval_steps": config["eval_steps"],
         "report_to": config["report_to"],
-        "run_name": "sft_qwen35_4b_base",
+        "run_name": f"sft_{config['experiment_tag']}",
         "seed": config["seed"],
         "remove_unused_columns": False,
         "gradient_checkpointing": config.get("gradient_checkpointing", True),
@@ -206,7 +200,7 @@ def run_sft_training(mode=None):
             swanlab.init(
                 project=SWANLAB_PROJECT,
                 workspace=SWANLAB_WORKSPACE,
-                experiment_name=f"SFT-{mode or 'auto'}",
+                experiment_name=f"SFT-{config['experiment_tag']}",
                 description=f"Qwen3.5-4B-Base SFT ({mode or 'auto'})",
                 config=config,
             )
@@ -215,19 +209,13 @@ def run_sft_training(mode=None):
             config["report_to"] = ["tensorboard"]
 
     if not SFT_TRAIN_PATH.exists() or not SFT_EVAL_PATH.exists():
-        raise FileNotFoundError(
-            "Cleaned qwen35_v2 data not found. Run src_qwen35/data_prepare.py first."
-        )
+        raise FileNotFoundError("Cleaned qwen35_v2 data not found. Run src_qwen35/data_prepare.py first.")
 
     model, tokenizer = _load_model_and_tokenizer(config)
-    train_dataset = hf_load_dataset(
-        "json", data_files=str(SFT_TRAIN_PATH), split="train"
-    )
+    train_dataset = hf_load_dataset("json", data_files=str(SFT_TRAIN_PATH), split="train")
     eval_dataset = hf_load_dataset("json", data_files=str(SFT_EVAL_PATH), split="train")
 
-    logger.info(
-        "Loaded SFT datasets: train=%s eval=%s", len(train_dataset), len(eval_dataset)
-    )
+    logger.info("Loaded SFT datasets: train=%s eval=%s", len(train_dataset), len(eval_dataset))
     train_dataset = _preprocess_dataset(
         train_dataset,
         tokenizer,
@@ -247,8 +235,6 @@ def run_sft_training(mode=None):
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     training_args = _build_training_args(config)
-    training_args = _build_training_args(config)
-
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -260,9 +246,7 @@ def run_sft_training(mode=None):
     checkpoints = list(OUTPUT_DIR.glob("checkpoint-*"))
     resume_from_checkpoint = None
     if checkpoints:
-        resume_from_checkpoint = str(
-            max(checkpoints, key=lambda item: int(item.name.split("-")[1]))
-        )
+        resume_from_checkpoint = str(max(checkpoints, key=lambda item: int(item.name.split("-")[1])))
         logger.info("Resuming from checkpoint %s", resume_from_checkpoint)
 
     train_result = trainer.train(resume_from_checkpoint=resume_from_checkpoint)
@@ -276,18 +260,12 @@ def run_sft_training(mode=None):
     trainer.log_metrics("eval", eval_metrics)
     trainer.save_metrics("eval", eval_metrics)
 
-    logger.info(
-        "SFT complete. train_loss=%s eval_loss=%s",
-        train_metrics.get("train_loss"),
-        eval_metrics.get("eval_loss"),
-    )
+    logger.info("SFT complete. train_loss=%s eval_loss=%s", train_metrics.get("train_loss"), eval_metrics.get("eval_loss"))
     return train_metrics, eval_metrics
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Stage B: Qwen3.5-4B-Base SFT training"
-    )
+    parser = argparse.ArgumentParser(description="Stage B: Qwen3.5-4B-Base SFT training")
     parser.add_argument("--mode", type=str, default=None, choices=["single", "multi"])
     args = parser.parse_args()
     run_sft_training(mode=args.mode)

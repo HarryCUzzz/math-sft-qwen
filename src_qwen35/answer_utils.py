@@ -49,7 +49,7 @@ def extract_boxed_answer(text: str) -> Optional[str]:
         index += 1
 
     if depth == 0:
-        return text[start:index - 1].strip()
+        return text[start : index - 1].strip()
     return None
 
 
@@ -165,6 +165,32 @@ def answers_equivalent(predicted_text: str, reference_text: str, dataset_name: s
         return math.isclose(predicted_num, reference_num, rel_tol=1e-9, abs_tol=1e-9)
 
     return _sympy_equivalent(predicted, reference)
+
+
+def answer_match_grade(predicted_text: str, reference_text: str, dataset_name: str = "default") -> str:
+    candidate = extract_candidate_answer(predicted_text)
+    if candidate is None:
+        return "invalid"
+
+    predicted = normalize_answer(candidate)
+    reference = normalize_answer(extract_reference_answer(reference_text, dataset_name))
+    if not predicted or not reference:
+        return "invalid"
+    if predicted == reference:
+        return "exact"
+
+    predicted_num = _coerce_numeric(predicted)
+    reference_num = _coerce_numeric(reference)
+    if predicted_num is not None and reference_num is not None:
+        if math.isclose(predicted_num, reference_num, rel_tol=1e-9, abs_tol=1e-9):
+            return "exact"
+        if math.isclose(predicted_num, reference_num, rel_tol=1e-3, abs_tol=1e-3):
+            return "numeric_close"
+        return "parsed_wrong"
+
+    if _sympy_equivalent(predicted, reference):
+        return "exact"
+    return "parsed_wrong"
 
 
 def has_valid_final_structure(text: str) -> bool:

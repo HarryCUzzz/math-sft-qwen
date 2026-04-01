@@ -6,11 +6,12 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import random
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 from datasets import Dataset, load_dataset, load_from_disk
 
@@ -25,17 +26,16 @@ from config import (
     SMOKE_OVERFIT_PATH,
     SMOKE_SFT_PATH,
     THINKING_SYSTEM_PROMPT,
+    build_conditioned_user_prompt,
 )
-from answer_utils import extract_boxed_answer, extract_reference_answer, normalize_answer, strip_think_tags
+from answer_utils import extract_reference_answer, normalize_answer, strip_think_tags
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BIGMATH_LOCAL_PARQUET = PROJECT_ROOT / "data" / "Big-Math-RL-Verified" / "data" / "train-00000-of-00001.parquet"
-DEEPMATH_LOCAL_PATH = Path(
-    __import__("os").environ.get("DEEPMATH_LOCAL_PATH", PROJECT_ROOT / "data" / "DeepMath-103K")
-)
+DEEPMATH_LOCAL_PATH = Path(os.environ.get("DEEPMATH_LOCAL_PATH", PROJECT_ROOT / "data" / "DeepMath-103K"))
 
 MIN_QUESTION_CHARS = 10
 MAX_QUESTION_CHARS = 3500
@@ -129,6 +129,7 @@ def _guess_domain(item: dict, question: str) -> str:
         "number_theory": ["prime", "integer", "mod", "divisible"],
         "calculus": ["derivative", "integral", "limit"],
         "probability": ["probability", "random", "expected"],
+        "arithmetic": ["how many", "how much", "per day", "percent", "dollars", "meters", "total", "left"],
     }
     for domain, domain_keywords in keywords.items():
         if any(keyword in text for keyword in domain_keywords):
@@ -154,9 +155,28 @@ def _guess_difficulty(item: dict) -> str:
     return "easy"
 
 
-def _build_assistant_text(solution: str, final_answer: str) -> str:
+def _infer_task_type(domain: str, parser_type: str, source_dataset: str) -> str:
+    if parser_type == "gsm8k" or domain == "arithmetic":
+        return "arithmetic_word_problem"
+    if source_dataset == "DeepMath-103K":
+        return "formal_math"
+    if domain in {"geometry", "number_theory", "calculus", "algebra", "probability"}:
+        return "formal_math"
+    return "general_math"
+
+
+def _infer_reasoning_style(task_type: str, difficulty: str) -> str:
+    if task_type == "arithmetic_word_problem" and difficulty in {"easy", "medium", "unknown"}:
+        return "concise_cot"
+    return "full_cot"
+
+
+def _build_assistant_text(solution: str, final_answer: str, reasoning_style: str) -> str:
     cleaned_solution = strip_think_tags(solution).strip()
     final_line = f"Final answer: \\boxed{{{final_answer}}}"
+    if reasoning_style == "concise_cot" and cleaned_solution:
+        solution_lines = [line.strip() for line in cleaned_solution.splitlines() if line.strip()]
+        cleaned_solution = "\n".join(solution_lines[:4]).strip()
     if cleaned_solution:
         return f"<think>\n{cleaned_solution}\n</think>\n\n{final_line}"
     return final_line
@@ -174,12 +194,7 @@ def _sample_from_records(records: Sequence[dict], quota: int, seed: int) -> List
 
 
 def _drop_overlaps(records: Sequence[dict], eval_questions: set[str]) -> List[dict]:
-    filtered = []
-    for record in records:
-        if record["normalized_question"] in eval_questions:
-            continue
-        filtered.append(record)
-    return filtered
+    return [record for record in records if record["normalized_question"] not in eval_questions]
 
 
 def _normalize_deepmath(dataset: Dataset) -> List[dict]:
@@ -255,8 +270,11 @@ def _clean_records(records: Sequence[dict], eval_questions: set[str]) -> Tuple[L
             continue
         seen_hashes.add(question_hash)
 
+        parser_type = "gsm8k" if "gsm8k" in record.get("raw_source", "").lower() else "math"
+        task_type = _infer_task_type(record.get("domain", "general"), parser_type, record["source_dataset"])
+        reasoning_style = _infer_reasoning_style(task_type, record.get("difficulty", "unknown"))
         cleaned_solution = record.get("solution", "").strip()
-        assistant_text = _build_assistant_text(cleaned_solution, final_answer)
+        assistant_text = _build_assistant_text(cleaned_solution, final_answer, reasoning_style)
         overlap = normalized_question in eval_questions
         deduped.append(
             {
@@ -268,9 +286,10 @@ def _clean_records(records: Sequence[dict], eval_questions: set[str]) -> Tuple[L
                 "raw_source": record.get("raw_source", ""),
                 "difficulty": record.get("difficulty", "unknown"),
                 "domain": record.get("domain", "general"),
+                "task_type": task_type,
                 "benchmark_overlap_flag": overlap,
-                "reasoning_style": "cot",
-                "parser_type": "gsm8k" if "gsm8k" in record.get("raw_source", "").lower() else "math",
+                "reasoning_style": reasoning_style,
+                "parser_type": parser_type,
             }
         )
     stats["total_after"] = len(deduped)
@@ -278,16 +297,24 @@ def _clean_records(records: Sequence[dict], eval_questions: set[str]) -> Tuple[L
 
 
 def _to_sft_record(record: dict) -> dict:
+    user_prompt = build_conditioned_user_prompt(
+        record["question"],
+        record["task_type"],
+        record["domain"],
+        record["difficulty"],
+        record["reasoning_style"],
+    )
     return {
         "messages": [
             {"role": "system", "content": THINKING_SYSTEM_PROMPT},
-            {"role": "user", "content": record["question"]},
+            {"role": "user", "content": user_prompt},
             {"role": "assistant", "content": record["assistant_text"]},
         ],
         "final_answer": record["final_answer"],
         "source_dataset": record["source_dataset"],
         "difficulty": record["difficulty"],
         "domain": record["domain"],
+        "task_type": record["task_type"],
         "benchmark_overlap_flag": record["benchmark_overlap_flag"],
         "reasoning_style": record["reasoning_style"],
         "parser_type": record["parser_type"],
@@ -295,12 +322,20 @@ def _to_sft_record(record: dict) -> dict:
 
 
 def _to_rl_record(record: dict) -> dict:
+    prompt = build_conditioned_user_prompt(
+        record["question"],
+        record["task_type"],
+        record["domain"],
+        record["difficulty"],
+        record["reasoning_style"],
+    )
     return {
-        "prompt": record["question"],
+        "prompt": prompt,
         "reference_answer": record["final_answer"],
         "source_dataset": record["source_dataset"],
         "difficulty": record["difficulty"],
         "domain": record["domain"],
+        "task_type": record["task_type"],
         "benchmark_overlap_flag": record["benchmark_overlap_flag"],
         "reasoning_style": record["reasoning_style"],
         "parser_type": record["parser_type"],

@@ -1,4 +1,3 @@
-
 """Centralized configuration for the Qwen3.5-4B-Base math post-training stack."""
 
 import os
@@ -8,7 +7,52 @@ import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_EVAL = PROJECT_ROOT / "data" / "eval_datasets"
-DATA_QWEN35 = PROJECT_ROOT / "data" / "qwen35_v2"
+EXPERIMENT_TAG = os.environ.get("QWEN35_EXPERIMENT_TAG", "").strip()
+DATA_TAG = os.environ.get("QWEN35_DATA_TAG", EXPERIMENT_TAG).strip()
+OUTPUT_TAG = os.environ.get("QWEN35_OUTPUT_TAG", EXPERIMENT_TAG).strip()
+
+
+def _tagged_path(base: Path, tag: str) -> Path:
+    if not tag:
+        return base
+    return base / tag
+
+
+def build_conditioned_user_prompt(question: str, task_type: str, domain: str, difficulty: str, reasoning_style: str) -> str:
+    header = [
+        f"[Task Type: {task_type}]",
+        f"[Math Domain: {domain}]",
+        f"[Difficulty: {difficulty}]",
+        f"[Reasoning Style: {reasoning_style}]",
+        "",
+    ]
+    return "\n".join(header) + question.strip()
+
+
+def get_eval_condition(dataset_key: str) -> dict:
+    if dataset_key == "gsm8k":
+        return {
+            "task_type": "arithmetic_word_problem",
+            "domain": "arithmetic",
+            "difficulty": "medium",
+            "reasoning_style": "concise_cot",
+        }
+    if dataset_key == "math500":
+        return {
+            "task_type": "formal_math",
+            "domain": "competition_math",
+            "difficulty": "hard",
+            "reasoning_style": "full_cot",
+        }
+    return {
+        "task_type": "theorem_and_science_reasoning",
+        "domain": "theoremqa",
+        "difficulty": "hard",
+        "reasoning_style": "full_cot",
+    }
+
+
+DATA_QWEN35 = _tagged_path(PROJECT_ROOT / "data" / "qwen35_v2", DATA_TAG)
 DATA_QWEN35_PROCESSED = DATA_QWEN35 / "processed"
 DATA_QWEN35_SMOKE = DATA_QWEN35 / "smoke"
 DATA_QWEN35_MANIFESTS = DATA_QWEN35 / "manifests"
@@ -17,7 +61,7 @@ SFT_EVAL_PATH = DATA_QWEN35_PROCESSED / "sft_eval.jsonl"
 RL_TRAIN_PATH = DATA_QWEN35_PROCESSED / "rl_train.jsonl"
 SMOKE_OVERFIT_PATH = DATA_QWEN35_SMOKE / "overfit_50.jsonl"
 SMOKE_SFT_PATH = DATA_QWEN35_SMOKE / "sft_pilot_200.jsonl"
-OUTPUT_BASE = PROJECT_ROOT / "outputs_qwen35"
+OUTPUT_BASE = _tagged_path(PROJECT_ROOT / "outputs_qwen35", OUTPUT_TAG)
 
 MODEL_PATH = os.environ.get("QWEN35_MODEL_PATH", "/home/lyl/models/Qwen/Qwen3.5-4B-Base")
 
@@ -26,8 +70,10 @@ SWANLAB_PROJECT = os.environ.get("SWANLAB_PROJECT", "Qwen3.5-4B-Base-MathRL")
 SWANLAB_WORKSPACE = os.environ.get("SWANLAB_WORKSPACE")
 
 THINKING_SYSTEM_PROMPT = (
-    "You are a helpful math assistant. Think through the problem carefully inside "
-    "<think>...</think> tags, then provide the final answer as `Final answer: \\boxed{...}`."
+    "You are a helpful math assistant. Follow the requested reasoning style. "
+    "Use concise reasoning for arithmetic word problems and fuller derivations for formal math. "
+    "If you show reasoning, place it inside <think>...</think> tags, then provide the final answer as "
+    "`Final answer: \\boxed{...}`."
 )
 
 USE_4BIT_QUANTIZATION = os.environ.get("USE_4BIT", "false").lower() == "true"
@@ -52,6 +98,9 @@ def get_report_to():
 DEFAULT_REPORT_TO = get_report_to()
 
 SFT_CONFIG_SINGLE = {
+    "experiment_tag": EXPERIMENT_TAG or "default",
+    "data_root": str(DATA_QWEN35),
+    "output_root": str(OUTPUT_BASE),
     "model_name_or_path": MODEL_PATH,
     "trust_remote_code": True,
     "use_4bit": USE_4BIT_QUANTIZATION,
@@ -96,6 +145,9 @@ SFT_CONFIG_MULTI = {
 }
 
 GRPO_CONFIG_SINGLE = {
+    "experiment_tag": EXPERIMENT_TAG or "default",
+    "data_root": str(DATA_QWEN35),
+    "output_root": str(OUTPUT_BASE),
     "model_name": MODEL_PATH,
     "use_4bit": USE_4BIT_QUANTIZATION,
     "learning_rate": 8e-7,
@@ -113,6 +165,13 @@ GRPO_CONFIG_SINGLE = {
     "seed": 42,
     "gradient_checkpointing": True,
     "bf16": True,
+    "numeric_close_reward": 0.35,
+    "parsed_wrong_reward": 0.10,
+    "parse_bonus": 0.03,
+    "invalid_answer_penalty": -0.10,
+    "final_structure_bonus": 0.02,
+    "length_penalty_start_tokens": 320,
+    "length_penalty_weight": 0.10,
 }
 
 GRPO_CONFIG_MULTI = {
@@ -122,6 +181,7 @@ GRPO_CONFIG_MULTI = {
 }
 
 EVAL_CONFIG = {
+    "experiment_tag": EXPERIMENT_TAG or "default",
     "base_model": MODEL_PATH,
     "max_new_tokens": 1024,
     "batch_size": 16,
@@ -217,6 +277,20 @@ def get_grpo_config(mode=None):
         config["save_steps"] = int(os.environ["SAVE_STEPS"])
     if "USE_4BIT" in os.environ:
         config["use_4bit"] = os.environ["USE_4BIT"].lower() == "true"
+    if "NUMERIC_CLOSE_REWARD" in os.environ:
+        config["numeric_close_reward"] = float(os.environ["NUMERIC_CLOSE_REWARD"])
+    if "PARSED_WRONG_REWARD" in os.environ:
+        config["parsed_wrong_reward"] = float(os.environ["PARSED_WRONG_REWARD"])
+    if "PARSE_BONUS" in os.environ:
+        config["parse_bonus"] = float(os.environ["PARSE_BONUS"])
+    if "INVALID_ANSWER_PENALTY" in os.environ:
+        config["invalid_answer_penalty"] = float(os.environ["INVALID_ANSWER_PENALTY"])
+    if "FINAL_STRUCTURE_BONUS" in os.environ:
+        config["final_structure_bonus"] = float(os.environ["FINAL_STRUCTURE_BONUS"])
+    if "LENGTH_PENALTY_START_TOKENS" in os.environ:
+        config["length_penalty_start_tokens"] = int(os.environ["LENGTH_PENALTY_START_TOKENS"])
+    if "LENGTH_PENALTY_WEIGHT" in os.environ:
+        config["length_penalty_weight"] = float(os.environ["LENGTH_PENALTY_WEIGHT"])
 
     return config
 

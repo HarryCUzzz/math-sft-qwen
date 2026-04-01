@@ -1,4 +1,3 @@
-
 """Stage C - lightweight GRPO continuation on top of the best SFT LoRA adapter."""
 
 import argparse
@@ -13,7 +12,7 @@ from peft import PeftModel, prepare_model_for_kbit_training
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from trl import GRPOConfig, GRPOTrainer
 
-from answer_utils import answers_equivalent, extract_candidate_answer, has_valid_final_structure
+from answer_utils import answer_match_grade, extract_candidate_answer, has_valid_final_structure
 from config import (
     DEFAULT_REPORT_TO,
     LOGGER_TYPE,
@@ -33,6 +32,8 @@ logger = logging.getLogger(__name__)
 SFT_MODEL_DIR = OUTPUT_BASE / "sft_model"
 GRPO_OUTPUT_DIR = OUTPUT_BASE / "grpo_model"
 GRPO_LOG_DIR = OUTPUT_BASE / "grpo_logs"
+REWARD_CONFIG = None
+REWARD_TOKENIZER = None
 
 
 def _add_file_handler(log_dir: Path) -> None:
@@ -55,11 +56,25 @@ def _current_device_map():
     return {"": int(os.environ.get("LOCAL_RANK", "0"))}
 
 
+def _completion_token_count(completion: str) -> int:
+    if REWARD_TOKENIZER is None:
+        return max(1, len(completion.split()))
+    return len(REWARD_TOKENIZER(completion, add_special_tokens=False)["input_ids"])
+
+
 def correctness_reward_fn(completions, reference_answer, parser_type=None, **kwargs):
     parser_type = parser_type or ["default"] * len(completions)
     rewards = []
     for completion, reference, current_parser in zip(completions, reference_answer, parser_type):
-        rewards.append(1.0 if answers_equivalent(completion, reference, current_parser) else 0.0)
+        grade = answer_match_grade(completion, reference, current_parser)
+        if grade == "exact":
+            rewards.append(1.0)
+        elif grade == "numeric_close":
+            rewards.append(REWARD_CONFIG["numeric_close_reward"])
+        elif grade == "parsed_wrong":
+            rewards.append(REWARD_CONFIG["parsed_wrong_reward"])
+        else:
+            rewards.append(0.0)
     return rewards
 
 
@@ -69,15 +84,17 @@ def format_reward_fn(completions, **kwargs):
         reward = 0.0
         candidate = extract_candidate_answer(completion)
         if candidate:
-            reward += 0.05
+            reward += REWARD_CONFIG["parse_bonus"]
         else:
-            reward -= 0.10
+            reward += REWARD_CONFIG["invalid_answer_penalty"]
 
-        if "<think>" in completion and "</think>" in completion and has_valid_final_structure(completion):
-            reward += 0.05
+        if has_valid_final_structure(completion):
+            reward += REWARD_CONFIG["final_structure_bonus"]
 
-        if len(completion) > 3000:
-            reward -= 0.05
+        completion_tokens = _completion_token_count(completion)
+        start_tokens = REWARD_CONFIG["length_penalty_start_tokens"]
+        if completion_tokens > start_tokens:
+            reward -= REWARD_CONFIG["length_penalty_weight"] * ((completion_tokens - start_tokens) / start_tokens)
 
         rewards.append(reward)
     return rewards
@@ -98,14 +115,14 @@ def load_rl_dataset():
     return data
 
 
-def prepare_dataset_for_grpo(raw_data, tokenizer):
+def prepare_dataset_for_grpo(raw_data):
     processed = []
     for item in raw_data:
         messages = [
             {"role": "system", "content": THINKING_SYSTEM_PROMPT},
             {"role": "user", "content": item["prompt"]},
         ]
-        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        prompt = REWARD_TOKENIZER.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         processed.append(
             {
                 "prompt": prompt,
@@ -118,8 +135,11 @@ def prepare_dataset_for_grpo(raw_data, tokenizer):
 
 
 def run_grpo_training(mode=None):
+    global REWARD_CONFIG, REWARD_TOKENIZER
+
     _add_file_handler(GRPO_LOG_DIR)
     config = get_grpo_config(mode)
+    REWARD_CONFIG = config
     print_config_summary(config, "GRPO Training Config")
 
     if LOGGER_TYPE == "swanlab":
@@ -129,7 +149,7 @@ def run_grpo_training(mode=None):
             swanlab.init(
                 project=SWANLAB_PROJECT,
                 workspace=SWANLAB_WORKSPACE,
-                experiment_name=f"GRPO-{mode or 'auto'}",
+                experiment_name=f"GRPO-{config['experiment_tag']}",
                 description=f"Qwen3.5-4B-Base GRPO ({mode or 'auto'})",
                 config=config,
             )
@@ -142,6 +162,7 @@ def run_grpo_training(mode=None):
     tokenizer = AutoTokenizer.from_pretrained(config["model_name"], trust_remote_code=True, padding_side="left")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    REWARD_TOKENIZER = tokenizer
 
     if config.get("use_4bit", False):
         quantization_config = BitsAndBytesConfig(**QUANTIZATION_CONFIG)
@@ -167,7 +188,7 @@ def run_grpo_training(mode=None):
         model.warnings_issued = {}
     model.print_trainable_parameters()
 
-    train_dataset = prepare_dataset_for_grpo(load_rl_dataset(), tokenizer)
+    train_dataset = prepare_dataset_for_grpo(load_rl_dataset())
     GRPO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     GRPO_LOG_DIR.mkdir(parents=True, exist_ok=True)
 

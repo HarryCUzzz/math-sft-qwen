@@ -1,4 +1,3 @@
-
 """Stage D - evaluate Base, SFT, and GRPO with shared answer parsing logic."""
 
 import argparse
@@ -12,7 +11,7 @@ from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from answer_utils import answers_equivalent, extract_candidate_answer
-from config import DATA_EVAL, EVAL_CONFIG, EVAL_DATASETS, OUTPUT_BASE, THINKING_SYSTEM_PROMPT
+from config import DATA_EVAL, EVAL_CONFIG, EVAL_DATASETS, OUTPUT_BASE, THINKING_SYSTEM_PROMPT, build_conditioned_user_prompt, get_eval_condition
 
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -108,26 +107,36 @@ def evaluate_model_on_dataset(model, tokenizer, eval_data, dataset_key):
     total_completion_tokens = 0
     results = []
     batch_size = EVAL_CONFIG["batch_size"]
+    condition = get_eval_condition(dataset_key)
 
     for offset in range(0, len(eval_data), batch_size):
         batch = eval_data[offset : offset + batch_size]
         prompts = []
         for item in batch:
+            conditioned_user_prompt = build_conditioned_user_prompt(
+                item["question"],
+                condition["task_type"],
+                condition["domain"],
+                condition["difficulty"],
+                condition["reasoning_style"],
+            )
             messages = [
                 {"role": "system", "content": THINKING_SYSTEM_PROMPT},
-                {"role": "user", "content": item["question"]},
+                {"role": "user", "content": conditioned_user_prompt},
             ]
             prompts.append(tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
 
         inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True, max_length=2048).to(model.device)
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=EVAL_CONFIG["max_new_tokens"],
-            pad_token_id=tokenizer.pad_token_id,
-            do_sample=EVAL_CONFIG["do_sample"],
-            temperature=EVAL_CONFIG["temperature"],
-            use_cache=True,
-        )
+        generate_kwargs = {
+            "max_new_tokens": EVAL_CONFIG["max_new_tokens"],
+            "pad_token_id": tokenizer.pad_token_id,
+            "do_sample": EVAL_CONFIG["do_sample"],
+            "use_cache": True,
+        }
+        if EVAL_CONFIG["do_sample"]:
+            generate_kwargs["temperature"] = EVAL_CONFIG["temperature"]
+
+        outputs = model.generate(**inputs, **generate_kwargs)
         generated = tokenizer.batch_decode(outputs[:, inputs["input_ids"].shape[1] :], skip_special_tokens=True)
 
         for item, prediction in zip(batch, generated):

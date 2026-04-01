@@ -14,6 +14,7 @@ export MAX_LENGTH="${MAX_LENGTH:-3072}"
 export GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-8}"
 export SAVE_STEPS="${SAVE_STEPS:-200}"
 export WARMUP_RATIO="${WARMUP_RATIO:-0.03}"
+export QWEN35_EXPERIMENT_TAG="${QWEN35_EXPERIMENT_TAG:-}"
 
 PROJECT_DIR="/home/lyl/mathRL"
 cd "$PROJECT_DIR"
@@ -22,9 +23,22 @@ if [ ! -f "$QWEN35_MODEL_PATH/config.json" ]; then
     echo "Model not found: $QWEN35_MODEL_PATH"
     exit 1
 fi
-if [ ! -f "$PROJECT_DIR/data/qwen35_v2/processed/sft_train.jsonl" ]; then
-    echo "Cleaned SFT dataset not found. Run scripts/run_prepare_data_qwen35.sh first."
+
+DATA_ROOT="$PROJECT_DIR/data/qwen35_v2"
+OUTPUT_ROOT="$PROJECT_DIR/outputs_qwen35"
+if [ -n "$QWEN35_EXPERIMENT_TAG" ]; then
+    DATA_ROOT="$DATA_ROOT/$QWEN35_EXPERIMENT_TAG"
+    OUTPUT_ROOT="$OUTPUT_ROOT/$QWEN35_EXPERIMENT_TAG"
+fi
+
+if [ ! -f "$DATA_ROOT/processed/sft_train.jsonl" ]; then
+    echo "Cleaned SFT dataset not found: $DATA_ROOT/processed/sft_train.jsonl"
+    echo "Run scripts/run_prepare_data_qwen35.sh first."
     exit 1
 fi
+
+echo "Experiment tag: ${QWEN35_EXPERIMENT_TAG:-default}"
+echo "Data root: $DATA_ROOT"
+echo "Output root: $OUTPUT_ROOT"
 
 accelerate launch --config_file "$PROJECT_DIR/configs/accelerate/single_gpu.yaml" src_qwen35/sft_training.py --mode single
