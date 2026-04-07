@@ -10,6 +10,7 @@ DATA_EVAL = PROJECT_ROOT / "data" / "eval_datasets"
 EXPERIMENT_TAG = os.environ.get("QWEN35_EXPERIMENT_TAG", "").strip()
 DATA_TAG = os.environ.get("QWEN35_DATA_TAG", EXPERIMENT_TAG).strip()
 OUTPUT_TAG = os.environ.get("QWEN35_OUTPUT_TAG", EXPERIMENT_TAG).strip()
+SFT_STAGE = os.environ.get("SFT_STAGE", "main").strip().lower()
 
 
 def _tagged_path(base: Path, tag: str) -> Path:
@@ -19,14 +20,27 @@ def _tagged_path(base: Path, tag: str) -> Path:
 
 
 def build_conditioned_user_prompt(question: str, task_type: str, domain: str, difficulty: str, reasoning_style: str) -> str:
+    task_label = {
+        "arithmetic_word_problem": "arithmetic_word_problem",
+        "formal_math": "formal_math",
+        "theorem_and_science_reasoning": "theorem_and_science_reasoning",
+        "general_math": "general_math",
+    }.get(task_type, task_type)
+    style_instructions = {
+        "concise_cot": "Use short step-by-step reasoning. Keep only the necessary steps before the final answer.",
+        "full_cot": "Use complete mathematical reasoning before the final answer.",
+    }
     header = [
-        f"[Task Type: {task_type}]",
-        f"[Math Domain: {domain}]",
-        f"[Difficulty: {difficulty}]",
-        f"[Reasoning Style: {reasoning_style}]",
-        "",
+        f"[Task: {task_label}]",
+        f"[Style: {reasoning_style}]",
+        style_instructions.get(reasoning_style, "Use mathematically sound reasoning before the final answer."),
     ]
-    return "\n".join(header) + question.strip()
+    if domain and domain != "general":
+        header.append(f"Domain hint: {domain}.")
+    if difficulty and difficulty != "unknown":
+        header.append(f"Difficulty: {difficulty}.")
+    header.extend(["", question.strip()])
+    return "\n".join(header)
 
 
 def get_eval_condition(dataset_key: str) -> dict:
@@ -58,6 +72,8 @@ DATA_QWEN35_SMOKE = DATA_QWEN35 / "smoke"
 DATA_QWEN35_MANIFESTS = DATA_QWEN35 / "manifests"
 SFT_TRAIN_PATH = DATA_QWEN35_PROCESSED / "sft_train.jsonl"
 SFT_EVAL_PATH = DATA_QWEN35_PROCESSED / "sft_eval.jsonl"
+SFT_CALIBRATION_TRAIN_PATH = DATA_QWEN35_PROCESSED / "sft_calibration_train.jsonl"
+SFT_CALIBRATION_EVAL_PATH = DATA_QWEN35_PROCESSED / "sft_calibration_eval.jsonl"
 RL_TRAIN_PATH = DATA_QWEN35_PROCESSED / "rl_train.jsonl"
 SMOKE_OVERFIT_PATH = DATA_QWEN35_SMOKE / "overfit_50.jsonl"
 SMOKE_SFT_PATH = DATA_QWEN35_SMOKE / "sft_pilot_200.jsonl"
@@ -99,6 +115,7 @@ DEFAULT_REPORT_TO = get_report_to()
 
 SFT_CONFIG_SINGLE = {
     "experiment_tag": EXPERIMENT_TAG or "default",
+    "stage": SFT_STAGE,
     "data_root": str(DATA_QWEN35),
     "output_root": str(OUTPUT_BASE),
     "model_name_or_path": MODEL_PATH,
@@ -191,7 +208,22 @@ EVAL_CONFIG = {
     "use_flash_attention": True,
     "save_details": True,
     "num_eval_samples": None,
+    "sample_seed": 42,
 }
+
+
+def get_sft_paths(stage: str | None = None) -> tuple[Path, Path]:
+    stage = (stage or SFT_STAGE or "main").lower()
+    if stage == "calibration":
+        return SFT_CALIBRATION_TRAIN_PATH, SFT_CALIBRATION_EVAL_PATH
+    return SFT_TRAIN_PATH, SFT_EVAL_PATH
+
+
+def get_sft_output_dirs(stage: str | None = None) -> tuple[Path, Path]:
+    stage = (stage or SFT_STAGE or "main").lower()
+    if stage == "calibration":
+        return OUTPUT_BASE / "sft_calibration_model", OUTPUT_BASE / "sft_calibration_logs"
+    return OUTPUT_BASE / "sft_model", OUTPUT_BASE / "sft_logs"
 
 EVAL_DATASETS = {
     "math500": {
@@ -248,6 +280,15 @@ def get_sft_config(mode=None):
         config["warmup_ratio"] = float(os.environ["WARMUP_RATIO"])
     if "USE_4BIT" in os.environ:
         config["use_4bit"] = os.environ["USE_4BIT"].lower() == "true"
+    if "SFT_STAGE" in os.environ:
+        config["stage"] = os.environ["SFT_STAGE"].lower()
+
+    if config["stage"] == "calibration":
+        config["learning_rate"] = float(os.environ.get("LEARNING_RATE", "5e-5"))
+        config["max_steps"] = int(os.environ.get("MAX_STEPS", "350"))
+        config["save_steps"] = int(os.environ.get("SAVE_STEPS", "100"))
+        config["eval_steps"] = int(os.environ.get("EVAL_STEPS", "50"))
+        config["warmup_ratio"] = float(os.environ.get("WARMUP_RATIO", "0.05"))
 
     config["report_to"] = DEFAULT_REPORT_TO
     return config
@@ -291,6 +332,14 @@ def get_grpo_config(mode=None):
         config["length_penalty_start_tokens"] = int(os.environ["LENGTH_PENALTY_START_TOKENS"])
     if "LENGTH_PENALTY_WEIGHT" in os.environ:
         config["length_penalty_weight"] = float(os.environ["LENGTH_PENALTY_WEIGHT"])
+    if "CONCISE_LENGTH_PENALTY_START_TOKENS" in os.environ:
+        config["concise_length_penalty_start_tokens"] = int(os.environ["CONCISE_LENGTH_PENALTY_START_TOKENS"])
+    else:
+        config["concise_length_penalty_start_tokens"] = 192
+    if "FULL_LENGTH_PENALTY_START_TOKENS" in os.environ:
+        config["full_length_penalty_start_tokens"] = int(os.environ["FULL_LENGTH_PENALTY_START_TOKENS"])
+    else:
+        config["full_length_penalty_start_tokens"] = config["length_penalty_start_tokens"]
 
     return config
 

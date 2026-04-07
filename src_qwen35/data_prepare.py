@@ -21,6 +21,8 @@ from config import (
     DATA_QWEN35_PROCESSED,
     DATA_QWEN35_SMOKE,
     RL_TRAIN_PATH,
+    SFT_CALIBRATION_EVAL_PATH,
+    SFT_CALIBRATION_TRAIN_PATH,
     SFT_EVAL_PATH,
     SFT_TRAIN_PATH,
     SMOKE_OVERFIT_PATH,
@@ -39,6 +41,7 @@ DEEPMATH_LOCAL_PATH = Path(os.environ.get("DEEPMATH_LOCAL_PATH", PROJECT_ROOT / 
 
 MIN_QUESTION_CHARS = 10
 MAX_QUESTION_CHARS = 3500
+CALIBRATION_TARGET_SIZE = 4000
 
 
 def ensure_dirs() -> None:
@@ -171,12 +174,26 @@ def _infer_reasoning_style(task_type: str, difficulty: str) -> str:
     return "full_cot"
 
 
+def _build_concise_reasoning(solution: str) -> str:
+    cleaned_solution = strip_think_tags(solution).strip()
+    if not cleaned_solution:
+        return ""
+
+    lines = [line.strip() for line in cleaned_solution.splitlines() if line.strip()]
+    if len(lines) >= 3:
+        return "\n".join(lines[: min(6, len(lines))]).strip()
+
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", cleaned_solution) if part.strip()]
+    if sentences:
+        return " ".join(sentences[: min(4, len(sentences))]).strip()
+    return cleaned_solution
+
+
 def _build_assistant_text(solution: str, final_answer: str, reasoning_style: str) -> str:
     cleaned_solution = strip_think_tags(solution).strip()
     final_line = f"Final answer: \\boxed{{{final_answer}}}"
     if reasoning_style == "concise_cot" and cleaned_solution:
-        solution_lines = [line.strip() for line in cleaned_solution.splitlines() if line.strip()]
-        cleaned_solution = "\n".join(solution_lines[:4]).strip()
+        cleaned_solution = _build_concise_reasoning(cleaned_solution)
     if cleaned_solution:
         return f"<think>\n{cleaned_solution}\n</think>\n\n{final_line}"
     return final_line
@@ -281,6 +298,7 @@ def _clean_records(records: Sequence[dict], eval_questions: set[str]) -> Tuple[L
                 "question": question,
                 "normalized_question": normalized_question,
                 "final_answer": final_answer,
+                "solution": cleaned_solution,
                 "assistant_text": assistant_text,
                 "source_dataset": record["source_dataset"],
                 "raw_source": record.get("raw_source", ""),
@@ -294,6 +312,34 @@ def _clean_records(records: Sequence[dict], eval_questions: set[str]) -> Tuple[L
         )
     stats["total_after"] = len(deduped)
     return deduped, dict(stats)
+
+
+def _make_view_record(record: dict, reasoning_style: str, view_name: str) -> dict:
+    assistant_text = _build_assistant_text(record.get("solution", ""), record["final_answer"], reasoning_style)
+    return {
+        **record,
+        "assistant_text": assistant_text,
+        "reasoning_style": reasoning_style,
+        "view_name": view_name,
+    }
+
+
+def _expand_sft_views(record: dict) -> List[dict]:
+    task_type = record["task_type"]
+    difficulty = record.get("difficulty", "unknown")
+    views: List[dict] = []
+
+    if task_type == "arithmetic_word_problem":
+        views.append(_make_view_record(record, "concise_cot", "primary_concise"))
+        if difficulty in {"medium", "hard", "unknown"}:
+            views.append(_make_view_record(record, "full_cot", "supporting_full"))
+    elif task_type in {"formal_math", "theorem_and_science_reasoning"}:
+        views.append(_make_view_record(record, "full_cot", "primary_full"))
+        views.append(_make_view_record(record, "concise_cot", "supporting_concise"))
+    else:
+        views.append(_make_view_record(record, record["reasoning_style"], "primary"))
+
+    return views
 
 
 def _to_sft_record(record: dict) -> dict:
@@ -318,6 +364,7 @@ def _to_sft_record(record: dict) -> dict:
         "benchmark_overlap_flag": record["benchmark_overlap_flag"],
         "reasoning_style": record["reasoning_style"],
         "parser_type": record["parser_type"],
+        "view_name": record.get("view_name", "primary"),
     }
 
 
@@ -370,13 +417,26 @@ def build_datasets(seed: int, deepmath_quota: int, bigmath_sft_quota: int, bigma
     bigmath_sft_selected = _sample_from_records(bigmath_records, bigmath_sft_quota, seed + 1)
     bigmath_rl_selected = _sample_from_records(bigmath_records, bigmath_rl_quota, seed + 2)
 
-    sft_records = [_to_sft_record(record) for record in deepmath_selected + bigmath_sft_selected]
+    selected_records = deepmath_selected + bigmath_sft_selected
+    sft_records = [_to_sft_record(view) for record in selected_records for view in _expand_sft_views(record)]
     rng = random.Random(seed)
     rng.shuffle(sft_records)
     eval_size = max(1, int(len(sft_records) * eval_ratio))
     sft_eval_records = sft_records[:eval_size]
     sft_train_records = sft_records[eval_size:]
     rl_records = [_to_rl_record(record) for record in bigmath_rl_selected]
+
+    calibration_source = [
+        record
+        for record in selected_records
+        if record["task_type"] == "arithmetic_word_problem" or record["domain"] == "arithmetic"
+    ]
+    calibration_source = _sample_from_records(calibration_source, CALIBRATION_TARGET_SIZE, seed + 3)
+    calibration_records = [_to_sft_record(_make_view_record(record, "concise_cot", "calibration_concise")) for record in calibration_source]
+    rng.shuffle(calibration_records)
+    calibration_eval_size = max(1, int(len(calibration_records) * eval_ratio)) if calibration_records else 0
+    calibration_eval_records = calibration_records[:calibration_eval_size]
+    calibration_train_records = calibration_records[calibration_eval_size:]
 
     overfit_records = sft_train_records[:50]
     pilot_records = sft_train_records[:200]
@@ -390,6 +450,8 @@ def build_datasets(seed: int, deepmath_quota: int, bigmath_sft_quota: int, bigma
         "bigmath_cleaned": len(bigmath_records),
         "sft_train_size": _write_jsonl(SFT_TRAIN_PATH, sft_train_records),
         "sft_eval_size": _write_jsonl(SFT_EVAL_PATH, sft_eval_records),
+        "sft_calibration_train_size": _write_jsonl(SFT_CALIBRATION_TRAIN_PATH, calibration_train_records),
+        "sft_calibration_eval_size": _write_jsonl(SFT_CALIBRATION_EVAL_PATH, calibration_eval_records),
         "rl_train_size": _write_jsonl(RL_TRAIN_PATH, rl_records),
         "smoke_overfit_size": _write_jsonl(SMOKE_OVERFIT_PATH, overfit_records),
         "smoke_sft_size": _write_jsonl(SMOKE_SFT_PATH, pilot_records),

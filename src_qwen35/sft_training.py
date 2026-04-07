@@ -9,17 +9,16 @@ from pathlib import Path
 import torch
 from config import (
     LOGGER_TYPE,
-    OUTPUT_BASE,
     QUANTIZATION_CONFIG,
-    SFT_EVAL_PATH,
-    SFT_TRAIN_PATH,
     SWANLAB_PROJECT,
     SWANLAB_WORKSPACE,
     get_sft_config,
+    get_sft_output_dirs,
+    get_sft_paths,
     print_config_summary,
 )
 from datasets import load_dataset as hf_load_dataset
-from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, PeftModel, TaskType, get_peft_model, prepare_model_for_kbit_training
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -31,10 +30,6 @@ from transformers import (
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
-
-OUTPUT_DIR = OUTPUT_BASE / "sft_model"
-LOG_DIR = OUTPUT_BASE / "sft_logs"
-
 
 def _add_file_handler(log_dir: Path) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -57,7 +52,7 @@ def _current_device_map():
     return {"": local_rank}
 
 
-def _load_model_and_tokenizer(config):
+def _load_model_and_tokenizer(config, stage: str, main_output_dir: Path):
     tokenizer = AutoTokenizer.from_pretrained(
         config["model_name_or_path"],
         trust_remote_code=config["trust_remote_code"],
@@ -88,15 +83,20 @@ def _load_model_and_tokenizer(config):
     if config.get("gradient_checkpointing", True):
         model.gradient_checkpointing_enable()
 
-    lora_config = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=config["lora_rank"],
-        lora_alpha=config["lora_alpha"],
-        lora_dropout=config["lora_dropout"],
-        target_modules=config["lora_target_modules"],
-        bias="none",
-    )
-    model = get_peft_model(model, lora_config)
+    if stage == "calibration":
+        if not (main_output_dir / "adapter_config.json").exists():
+            raise FileNotFoundError(f"Main SFT adapter missing for calibration stage: {main_output_dir}")
+        model = PeftModel.from_pretrained(model, str(main_output_dir), is_trainable=True)
+    else:
+        lora_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=config["lora_rank"],
+            lora_alpha=config["lora_alpha"],
+            lora_dropout=config["lora_dropout"],
+            target_modules=config["lora_target_modules"],
+            bias="none",
+        )
+        model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
     return model, tokenizer
 
@@ -148,10 +148,10 @@ def _preprocess_dataset(dataset, tokenizer, max_length, num_proc, desc):
     return dataset.remove_columns(["label_token_count"])
 
 
-def _build_training_args(config):
+def _build_training_args(config, output_dir: Path, log_dir: Path):
     kwargs = {
-        "output_dir": str(OUTPUT_DIR),
-        "logging_dir": str(LOG_DIR),
+        "output_dir": str(output_dir),
+        "logging_dir": str(log_dir),
         "num_train_epochs": config["num_train_epochs"],
         "max_steps": config["max_steps"],
         "per_device_train_batch_size": config["per_device_train_batch_size"],
@@ -168,7 +168,7 @@ def _build_training_args(config):
         "save_total_limit": config["save_total_limit"],
         "eval_steps": config["eval_steps"],
         "report_to": config["report_to"],
-        "run_name": f"sft_{config['experiment_tag']}",
+        "run_name": f"sft_{config['stage']}_{config['experiment_tag']}",
         "seed": config["seed"],
         "remove_unused_columns": False,
         "gradient_checkpointing": config.get("gradient_checkpointing", True),
@@ -189,8 +189,13 @@ def _build_training_args(config):
 
 
 def run_sft_training(mode=None):
-    _add_file_handler(LOG_DIR)
     config = get_sft_config(mode)
+    stage = config.get("stage", "main")
+    output_dir, log_dir = get_sft_output_dirs(stage)
+    main_output_dir, _ = get_sft_output_dirs("main")
+    train_path, eval_path = get_sft_paths(stage)
+
+    _add_file_handler(log_dir)
     print_config_summary(config, "SFT Training Config")
 
     if LOGGER_TYPE == "swanlab":
@@ -200,20 +205,20 @@ def run_sft_training(mode=None):
             swanlab.init(
                 project=SWANLAB_PROJECT,
                 workspace=SWANLAB_WORKSPACE,
-                experiment_name=f"SFT-{config['experiment_tag']}",
-                description=f"Qwen3.5-4B-Base SFT ({mode or 'auto'})",
+                experiment_name=f"SFT-{stage}-{config['experiment_tag']}",
+                description=f"Qwen3.5-4B-Base SFT {stage} ({mode or 'auto'})",
                 config=config,
             )
         except Exception as exc:  # pragma: no cover - optional service
             logger.warning("SwanLab init failed, falling back to tensorboard: %s", exc)
             config["report_to"] = ["tensorboard"]
 
-    if not SFT_TRAIN_PATH.exists() or not SFT_EVAL_PATH.exists():
-        raise FileNotFoundError("Cleaned qwen35_v2 data not found. Run src_qwen35/data_prepare.py first.")
+    if not train_path.exists() or not eval_path.exists():
+        raise FileNotFoundError(f"Cleaned qwen35_v2 data not found for stage={stage}. Run src_qwen35/data_prepare.py first.")
 
-    model, tokenizer = _load_model_and_tokenizer(config)
-    train_dataset = hf_load_dataset("json", data_files=str(SFT_TRAIN_PATH), split="train")
-    eval_dataset = hf_load_dataset("json", data_files=str(SFT_EVAL_PATH), split="train")
+    model, tokenizer = _load_model_and_tokenizer(config, stage, main_output_dir)
+    train_dataset = hf_load_dataset("json", data_files=str(train_path), split="train")
+    eval_dataset = hf_load_dataset("json", data_files=str(eval_path), split="train")
 
     logger.info("Loaded SFT datasets: train=%s eval=%s", len(train_dataset), len(eval_dataset))
     train_dataset = _preprocess_dataset(
@@ -231,10 +236,10 @@ def run_sft_training(mode=None):
         "Tokenizing eval split",
     )
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
 
-    training_args = _build_training_args(config)
+    training_args = _build_training_args(config, output_dir, log_dir)
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -243,7 +248,7 @@ def run_sft_training(mode=None):
         data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer, padding=True),
     )
 
-    checkpoints = list(OUTPUT_DIR.glob("checkpoint-*"))
+    checkpoints = list(output_dir.glob("checkpoint-*"))
     resume_from_checkpoint = None
     if checkpoints:
         resume_from_checkpoint = str(max(checkpoints, key=lambda item: int(item.name.split("-")[1])))

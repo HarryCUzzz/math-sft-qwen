@@ -21,6 +21,7 @@ export FINAL_STRUCTURE_BONUS="${FINAL_STRUCTURE_BONUS:-0.02}"
 export LENGTH_PENALTY_START_TOKENS="${LENGTH_PENALTY_START_TOKENS:-320}"
 export LENGTH_PENALTY_WEIGHT="${LENGTH_PENALTY_WEIGHT:-0.10}"
 export QWEN35_EXPERIMENT_TAG="${QWEN35_EXPERIMENT_TAG:-}"
+export GRPO_PARENT_SFT_STAGE="${GRPO_PARENT_SFT_STAGE:-}"
 
 PROJECT_DIR="/home/lyl/mathRL"
 cd "$PROJECT_DIR"
@@ -32,8 +33,13 @@ if [ -n "$QWEN35_EXPERIMENT_TAG" ]; then
     OUTPUT_ROOT="$OUTPUT_ROOT/$QWEN35_EXPERIMENT_TAG"
 fi
 
-if [ ! -f "$OUTPUT_ROOT/sft_model/adapter_config.json" ]; then
-    echo "SFT adapter not found: $OUTPUT_ROOT/sft_model/adapter_config.json"
+PARENT_SFT_DIR="$OUTPUT_ROOT/sft_model"
+if [ -n "$GRPO_PARENT_SFT_STAGE" ] && [ "$GRPO_PARENT_SFT_STAGE" = "calibration" ]; then
+    PARENT_SFT_DIR="$OUTPUT_ROOT/sft_calibration_model"
+fi
+
+if [ ! -f "$PARENT_SFT_DIR/adapter_config.json" ]; then
+    echo "SFT adapter not found: $PARENT_SFT_DIR/adapter_config.json"
     echo "Run SFT first."
     exit 1
 fi
@@ -44,6 +50,7 @@ if [ ! -f "$DATA_ROOT/processed/rl_train.jsonl" ]; then
 fi
 
 echo "Experiment tag: ${QWEN35_EXPERIMENT_TAG:-default}"
+echo "GRPO parent SFT stage: ${GRPO_PARENT_SFT_STAGE:-auto}"
 echo "Data root: $DATA_ROOT"
 echo "Output root: $OUTPUT_ROOT"
 

@@ -15,6 +15,7 @@ export GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-8}"
 export SAVE_STEPS="${SAVE_STEPS:-200}"
 export WARMUP_RATIO="${WARMUP_RATIO:-0.03}"
 export QWEN35_EXPERIMENT_TAG="${QWEN35_EXPERIMENT_TAG:-}"
+export SFT_STAGE="${SFT_STAGE:-main}"
 
 PROJECT_DIR="/home/lyl/mathRL"
 cd "$PROJECT_DIR"
@@ -31,13 +32,19 @@ if [ -n "$QWEN35_EXPERIMENT_TAG" ]; then
     OUTPUT_ROOT="$OUTPUT_ROOT/$QWEN35_EXPERIMENT_TAG"
 fi
 
-if [ ! -f "$DATA_ROOT/processed/sft_train.jsonl" ]; then
-    echo "Cleaned SFT dataset not found: $DATA_ROOT/processed/sft_train.jsonl"
+TRAIN_FILE="$DATA_ROOT/processed/sft_train.jsonl"
+if [ "$SFT_STAGE" = "calibration" ]; then
+    TRAIN_FILE="$DATA_ROOT/processed/sft_calibration_train.jsonl"
+fi
+
+if [ ! -f "$TRAIN_FILE" ]; then
+    echo "Cleaned SFT dataset not found: $TRAIN_FILE"
     echo "Run scripts/run_prepare_data_qwen35.sh first."
     exit 1
 fi
 
 echo "Experiment tag: ${QWEN35_EXPERIMENT_TAG:-default}"
+echo "SFT stage: ${SFT_STAGE}"
 echo "Data root: $DATA_ROOT"
 echo "Output root: $OUTPUT_ROOT"
 

@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import random
 from pathlib import Path
 
 import torch
@@ -11,15 +12,29 @@ from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from answer_utils import answers_equivalent, extract_candidate_answer
-from config import DATA_EVAL, EVAL_CONFIG, EVAL_DATASETS, OUTPUT_BASE, THINKING_SYSTEM_PROMPT, build_conditioned_user_prompt, get_eval_condition
+from config import (
+    DATA_EVAL,
+    EVAL_CONFIG,
+    EVAL_DATASETS,
+    OUTPUT_BASE,
+    THINKING_SYSTEM_PROMPT,
+    build_conditioned_user_prompt,
+    get_eval_condition,
+    get_sft_output_dirs,
+)
 
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-SFT_MODEL_DIR = OUTPUT_BASE / "sft_model"
 GRPO_MODEL_DIR = OUTPUT_BASE / "grpo_model"
 EVAL_RESULTS_DIR = OUTPUT_BASE / "eval_results"
+
+
+def _resolve_eval_sft_dir() -> Path:
+    stage = os.environ.get("EVAL_SFT_STAGE", "main").strip().lower()
+    model_dir, _ = get_sft_output_dirs(stage)
+    return model_dir
 
 
 def load_model_and_tokenizer(model_type="base"):
@@ -44,10 +59,11 @@ def load_model_and_tokenizer(model_type="base"):
         model = AutoModelForCausalLM.from_pretrained(base_name, **load_kwargs)
     elif model_type == "sft":
         base_model = AutoModelForCausalLM.from_pretrained(base_name, **load_kwargs)
-        if (SFT_MODEL_DIR / "adapter_config.json").exists():
-            model = PeftModel.from_pretrained(base_model, str(SFT_MODEL_DIR)).merge_and_unload()
+        sft_model_dir = _resolve_eval_sft_dir()
+        if (sft_model_dir / "adapter_config.json").exists():
+            model = PeftModel.from_pretrained(base_model, str(sft_model_dir)).merge_and_unload()
         else:
-            raise FileNotFoundError(f"SFT adapter missing: {SFT_MODEL_DIR}")
+            raise FileNotFoundError(f"SFT adapter missing: {sft_model_dir}")
     elif model_type == "grpo":
         base_model = AutoModelForCausalLM.from_pretrained(base_name, **load_kwargs)
         if (GRPO_MODEL_DIR / "adapter_config.json").exists():
@@ -95,7 +111,9 @@ def load_eval_dataset(dataset_key):
             eval_rows.append({"question": str(question), "reference_answer": str(answer)})
 
     if EVAL_CONFIG.get("num_eval_samples"):
-        eval_rows = eval_rows[: EVAL_CONFIG["num_eval_samples"]]
+        rng = random.Random(EVAL_CONFIG.get("sample_seed", 42))
+        if len(eval_rows) > EVAL_CONFIG["num_eval_samples"]:
+            eval_rows = rng.sample(eval_rows, EVAL_CONFIG["num_eval_samples"])
     return eval_rows
 
 
@@ -237,6 +255,8 @@ def main():
 
     if args.num_samples:
         EVAL_CONFIG["num_eval_samples"] = args.num_samples
+    if "EVAL_SAMPLE_SEED" in os.environ:
+        EVAL_CONFIG["sample_seed"] = int(os.environ["EVAL_SAMPLE_SEED"])
     if args.summary_only:
         EVAL_CONFIG["save_details"] = False
 

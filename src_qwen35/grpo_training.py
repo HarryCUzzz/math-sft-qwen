@@ -23,17 +23,29 @@ from config import (
     SWANLAB_WORKSPACE,
     THINKING_SYSTEM_PROMPT,
     get_grpo_config,
+    get_sft_output_dirs,
     print_config_summary,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-SFT_MODEL_DIR = OUTPUT_BASE / "sft_model"
 GRPO_OUTPUT_DIR = OUTPUT_BASE / "grpo_model"
 GRPO_LOG_DIR = OUTPUT_BASE / "grpo_logs"
 REWARD_CONFIG = None
 REWARD_TOKENIZER = None
+
+
+def _resolve_parent_sft_dir() -> Path:
+    requested_stage = os.environ.get("GRPO_PARENT_SFT_STAGE", "").strip().lower()
+    if requested_stage:
+        parent_dir, _ = get_sft_output_dirs(requested_stage)
+        return parent_dir
+    calibration_dir, _ = get_sft_output_dirs("calibration")
+    if (calibration_dir / "adapter_config.json").exists():
+        return calibration_dir
+    main_dir, _ = get_sft_output_dirs("main")
+    return main_dir
 
 
 def _add_file_handler(log_dir: Path) -> None:
@@ -78,9 +90,11 @@ def correctness_reward_fn(completions, reference_answer, parser_type=None, **kwa
     return rewards
 
 
-def format_reward_fn(completions, **kwargs):
+def format_reward_fn(completions, reasoning_style=None, task_type=None, **kwargs):
+    reasoning_style = reasoning_style or ["full_cot"] * len(completions)
+    task_type = task_type or ["general_math"] * len(completions)
     rewards = []
-    for completion in completions:
+    for completion, current_style, current_task in zip(completions, reasoning_style, task_type):
         reward = 0.0
         candidate = extract_candidate_answer(completion)
         if candidate:
@@ -92,7 +106,10 @@ def format_reward_fn(completions, **kwargs):
             reward += REWARD_CONFIG["final_structure_bonus"]
 
         completion_tokens = _completion_token_count(completion)
-        start_tokens = REWARD_CONFIG["length_penalty_start_tokens"]
+        if current_style == "concise_cot" or current_task == "arithmetic_word_problem":
+            start_tokens = REWARD_CONFIG["concise_length_penalty_start_tokens"]
+        else:
+            start_tokens = REWARD_CONFIG["full_length_penalty_start_tokens"]
         if completion_tokens > start_tokens:
             reward -= REWARD_CONFIG["length_penalty_weight"] * ((completion_tokens - start_tokens) / start_tokens)
 
@@ -129,6 +146,8 @@ def prepare_dataset_for_grpo(raw_data):
                 "reference_answer": item["reference_answer"],
                 "parser_type": item.get("parser_type", "math"),
                 "source_dataset": item.get("source_dataset", "unknown"),
+                "reasoning_style": item.get("reasoning_style", "full_cot"),
+                "task_type": item.get("task_type", "general_math"),
             }
         )
     return Dataset.from_list(processed)
@@ -156,8 +175,10 @@ def run_grpo_training(mode=None):
         except Exception as exc:  # pragma: no cover - optional service
             logger.warning("SwanLab init failed, continuing with default logger: %s", exc)
 
-    if not (SFT_MODEL_DIR / "adapter_config.json").exists():
-        raise FileNotFoundError("SFT adapter not found. Run SFT before GRPO.")
+    parent_sft_dir = _resolve_parent_sft_dir()
+    if not (parent_sft_dir / "adapter_config.json").exists():
+        raise FileNotFoundError(f"SFT adapter not found for GRPO parent stage: {parent_sft_dir}")
+    logger.info("Using parent SFT adapter for GRPO: %s", parent_sft_dir)
 
     tokenizer = AutoTokenizer.from_pretrained(config["model_name"], trust_remote_code=True, padding_side="left")
     if tokenizer.pad_token is None:
@@ -180,7 +201,7 @@ def run_grpo_training(mode=None):
             torch_dtype=torch.bfloat16,
         )
 
-    model = PeftModel.from_pretrained(base_model, str(SFT_MODEL_DIR), is_trainable=True)
+    model = PeftModel.from_pretrained(base_model, str(parent_sft_dir), is_trainable=True)
     model.config.use_cache = False
     if config.get("gradient_checkpointing", True):
         model.gradient_checkpointing_enable()
